@@ -110,4 +110,17 @@ public struct MediaFile: Identifiable, Hashable, Codable {
         default: return .mp4
         }
     }
+    
+    // Clean, short format name for badges (e.g. "MP4", "MKV", "MOV")
+    public var cleanFormatName: String {
+        let ext = url.pathExtension.uppercased()
+        if !ext.isEmpty && ext.count <= 5 { return ext }
+        let lower = containerFormat.lowercased()
+        if lower.contains("matroska") { return "MKV" }
+        if lower.contains("mp4") { return "MP4" }
+        if lower.contains("mov") { return "MOV" }
+        if lower.contains("webm") { return "WEBM" }
+        let first = containerFormat.split(separator: ",").first.map(String.init)?.uppercased() ?? "MEDIA"
+        return first.count <= 5 ? first : suggestedContainer.shortName
+    }
 }
