@@ -268,6 +268,15 @@ struct StrataCoreTests {
         
         #expect(wavTrack.exportExtension == "wav")
         #expect(aiffTrack.exportExtension == "aiff")
+        
+        let videoTrackH264 = MediaTrack(streamIndex: 0, mediaType: .video, codecName: "h264", isSelected: true)
+        let videoTrackProRes = MediaTrack(streamIndex: 0, mediaType: .video, codecName: "prores", isSelected: true)
+        let videoTrackHEVC = MediaTrack(streamIndex: 0, mediaType: .video, codecName: "hevc", isSelected: true)
+        let videoTrackVP9 = MediaTrack(streamIndex: 0, mediaType: .video, codecName: "vp9", isSelected: true)
+        #expect(videoTrackH264.exportExtension == "mp4")
+        #expect(videoTrackProRes.exportExtension == "mov")
+        #expect(videoTrackHEVC.exportExtension == "mp4")
+        #expect(videoTrackVP9.exportExtension == "webm")
     }
     
     @Test("Extraction Filename Pattern Formatting")
