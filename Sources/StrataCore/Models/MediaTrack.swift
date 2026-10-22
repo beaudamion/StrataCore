@@ -351,19 +351,39 @@ public struct MediaTrack: Identifiable, Hashable, Codable {
     public var exportExtension: String {
         if action == .copy {
             switch codecName.lowercased() {
+            // Audio formats
             case "aac", "alac": return "m4a"
             case "mp3": return "mp3"
             case "ac3": return "ac3"
             case "eac3": return "eac3"
             case "flac": return "flac"
             case "opus": return "opus"
+            case "wav": return "wav"
+            case "aiff": return "aiff"
+            
+            // Subtitle formats
             case "subrip", "srt": return "srt"
             case "ass", "ssa": return "ass"
             case "webvtt", "vtt": return "vtt"
-            default: return mediaType == .audio ? "m4a" : "dat"
+            
+            // Video formats
+            case "prores", "apcn", "apch", "apco", "ap4h", "ap4x": return "mov"
+            case "vp9", "vp8": return "webm"
+            case "h264", "avc", "avc1", "hevc", "h265", "hev1", "hvc1", "av1", "mpeg4", "mp4v", "mpeg2video", "mjpeg": return "mp4"
+            
+            default:
+                if mediaType == .video { return "mp4" }
+                if mediaType == .audio { return "m4a" }
+                if mediaType == .subtitle { return "srt" }
+                return "dat"
             }
         } else {
             switch action {
+            // Video Transcoding
+            case .transcodeProRes: return "mov"
+            case .transcodeH264_VT, .transcodeHEVC_VT: return "mp4"
+            
+            // Audio Transcoding
             case .transcodeALAC, .transcodeAAC_Stereo, .transcodeAAC_51: return "m4a"
             case .transcodeMP3: return "mp3"
             case .transcodeFLAC: return "flac"
@@ -372,9 +392,15 @@ public struct MediaTrack: Identifiable, Hashable, Codable {
             case .transcodeEAC3_51: return "eac3"
             case .transcodeWAV: return "wav"
             case .transcodeAIFF: return "aiff"
+            
+            // Subtitle Conversion
             case .transcodeSRT: return "srt"
             case .transcodeMovText: return "m4a"
-            default: return "m4a"
+            
+            default:
+                if mediaType == .video { return "mp4" }
+                if mediaType == .subtitle { return "srt" }
+                return "m4a"
             }
         }
     }

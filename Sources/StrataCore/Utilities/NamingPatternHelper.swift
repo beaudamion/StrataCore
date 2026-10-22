@@ -39,6 +39,9 @@ public enum NamingPatternHelper {
         let codec: String
         if track.action.isTranscode {
             switch track.action {
+            case .transcodeH264_VT: codec = "h264"
+            case .transcodeHEVC_VT: codec = "hevc"
+            case .transcodeProRes: codec = "prores"
             case .transcodeALAC: codec = "alac"
             case .transcodeFLAC: codec = "flac"
             case .transcodeMP3: codec = "mp3"
@@ -48,6 +51,8 @@ public enum NamingPatternHelper {
             case .transcodeEAC3_51: codec = "eac3"
             case .transcodeWAV: codec = "wav"
             case .transcodeAIFF: codec = "aiff"
+            case .transcodeSRT: codec = "srt"
+            case .transcodeMovText: codec = "mov_text"
             default: codec = track.codecName
             }
         } else {

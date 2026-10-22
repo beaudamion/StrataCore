@@ -327,6 +327,12 @@ public actor RemuxEngine {
                 switch track.action {
                 case .copy:
                     args += ["-c", "copy"]
+                case .transcodeH264_VT:
+                    args += ["-c:v", "h264_videotoolbox", "-b:v", "6000k"]
+                case .transcodeHEVC_VT:
+                    args += ["-c:v", "hevc_videotoolbox", "-b:v", "4500k"]
+                case .transcodeProRes:
+                    args += ["-c:v", "prores_ks", "-profile:v", "2"]
                 case .transcodeMP3:
                     args += ["-c:a", "libmp3lame"]
                     if track.audioConfig.isVBR {
@@ -394,9 +400,9 @@ public actor RemuxEngine {
                     args += ["-ar", sr]
                 }
                 
-                // FastStart if m4a/mp4
+                // FastStart if m4a/mp4/mov/m4v
                 let ext = outputURL.pathExtension.lowercased()
-                if ext == "m4a" || ext == "mp4" {
+                if ext == "m4a" || ext == "mp4" || ext == "mov" || ext == "m4v" {
                     args += ["-movflags", "+faststart"]
                 }
                 
