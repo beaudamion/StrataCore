@@ -1,0 +1,59 @@
+STRATA SOFTWARE LICENSE & TERMS OF USE
+=======================================
+
+Copyright (c) 2026 Beau Damion. All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of 
+this software and associated documentation files (the "Software"), to use the 
+compiled Software subject to the following terms and conditions:
+
+1. PERMITTED USES & COMMERCIAL TIERS
+------------------------------------
+(a) Personal & Educational Use: You are free to download, install, run, and use the 
+    core remuxing and single-file processing features of Strata at no charge for 
+    personal, non-commercial purposes.
+(b) Pro & Commercial Deployment: Advanced features (including Audio & Video Transcoding and 
+    Batch Processing) and any commercial, business, or revenue-generating media workflows 
+    require a valid Strata Pro or Commercial license.
+
+2. SOURCE CODE AVAILABILITY
+---------------------------
+The core media engine source code is made available ("Source-Available") via StrataCore 
+(https://github.com/beaudamion/StrataCore) for personal review, security auditing, educational 
+inspection, and contributing bug fixes or enhancements back to the official repository.
+
+3. RESTRICTIONS ON DERIVATIVE APPLICATIONS & CODE REUSE
+-------------------------------------------------------
+You may NOT:
+(a) Use this source code, architecture, design assets, or any substantial portion 
+    thereof to create, publish, distribute, sublicense, or sell another software 
+    application, whether free or paid.
+(b) Distribute a rebranded, modified, or fork version of Strata or StrataCore as a separate 
+    standalone product without prior explicit written permission from the copyright holder.
+(c) Extract proprietary user interface designs, logos, or icon artwork for use in 
+    other commercial or public projects.
+(d) Remove, alter, or obscure any copyright notices, author attributions, or license 
+    files present in the Software or repository.
+
+4. ATTRIBUTION
+--------------
+Any public distribution, review, reference, or permitted redistribution of Strata or StrataCore
+must prominently display attribution to the original author:
+"Created by Beau Damion (https://github.com/beaudamion/StrataCore)".
+
+5. THIRD-PARTY COMPONENTS
+-------------------------
+Strata interfaces with third-party tools, including FFmpeg and FFprobe, which are 
+licensed independently under their respective open-source licenses (such as the GNU LGPL 
+and GNU GPL). Third-party license terms apply strictly to those respective components 
+as detailed in THIRD_PARTY_LICENSES.md and are not altered by this license.
+
+6. DISCLAIMER OF WARRANTY
+-------------------------
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, 
+FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE 
+AUTHOR OR COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER 
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, 
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE 
+SOFTWARE.
