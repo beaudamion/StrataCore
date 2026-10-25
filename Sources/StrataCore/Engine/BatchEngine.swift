@@ -17,6 +17,11 @@ public final class BatchEngine: ObservableObject {
     @Published public var defaultSubtitlePreset: BatchSubtitlePreset = .keepAll
     @Published public var customOutputFolder: URL? = nil
     
+    // Status & Notifications
+    @Published public var errorMessage: String? = nil
+    @Published public var showSuccessToast: Bool = false
+    @Published public var successMessage: String? = nil
+    
     private var engineTask: Task<Void, Never>?
     private var currentRemuxEngine: RemuxEngine?
     
@@ -37,7 +42,33 @@ public final class BatchEngine: ObservableObject {
     }
     
     public func addFiles(_ urls: [URL]) {
+        var unsupportedFiles: [URL] = []
+        var validURLs: [URL] = []
+        
         for url in urls {
+            let ext = url.pathExtension.lowercased()
+            if !ProbePipeline.commonMediaExtensions.contains(ext) {
+                unsupportedFiles.append(url)
+            } else {
+                validURLs.append(url)
+            }
+        }
+        
+        if !unsupportedFiles.isEmpty {
+            if unsupportedFiles.count == 1 {
+                let ext = unsupportedFiles[0].pathExtension.uppercased()
+                if ext.isEmpty {
+                    self.errorMessage = "Unsupported File Format: The selected file is not a supported media file."
+                } else {
+                    self.errorMessage = "Unsupported File Format: '.\(ext)' is not a supported media file. Strata works with video, audio, and subtitle files."
+                }
+            } else {
+                let exts = Array(Set(unsupportedFiles.map { "'.\($0.pathExtension.uppercased())'" })).sorted().joined(separator: ", ")
+                self.errorMessage = "Unsupported File Formats: \(exts) are not supported media files and were not added."
+            }
+        }
+        
+        for url in validURLs {
             // Avoid duplicate source URL in queue if already pending
             if items.contains(where: { $0.sourceURL == url && $0.status == .pending }) {
                 continue
@@ -71,6 +102,7 @@ public final class BatchEngine: ObservableObject {
                         if let idx = self.items.firstIndex(where: { $0.id == itemId }) {
                             self.items[idx].status = .failed(message: error.localizedDescription)
                             self.items[idx].errorMessage = error.localizedDescription
+                            self.errorMessage = error.localizedDescription
                         }
                     }
                 }
@@ -96,6 +128,9 @@ public final class BatchEngine: ObservableObject {
     public func clearAll() {
         cancel()
         items.removeAll()
+        errorMessage = nil
+        showSuccessToast = false
+        successMessage = nil
     }
     
     /// Enqueues a file with custom track selections, audio transcoding options,
@@ -248,6 +283,11 @@ public final class BatchEngine: ObservableObject {
                 self.isRunning = false
                 self.currentItemIndex = nil
                 self.currentRemuxEngine = nil
+                let done = self.completedCount
+                if done > 0 {
+                    self.successMessage = "Batch Export Complete: \(done) item\(done == 1 ? "" : "s") processed"
+                    self.showSuccessToast = true
+                }
             }
         }
     }
