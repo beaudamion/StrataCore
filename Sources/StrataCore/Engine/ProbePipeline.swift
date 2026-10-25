@@ -2,20 +2,48 @@ import Foundation
 
 public enum ProbeError: LocalizedError {
     case ffprobeNotFound
+    case fileNotFound(URL)
+    case permissionDenied(URL)
+    case unsupportedFormat(extension: String)
+    case emptyFile(String)
+    case noStreamsFound(String)
+    case corruptedMedia(String)
     case executionFailed(String)
     case decodingFailed(String)
-    case fileNotFound(URL)
     
     public var errorDescription: String? {
         switch self {
         case .ffprobeNotFound:
-            return "ffprobe binary not found. Please install ffmpeg or bundle static binaries."
-        case .executionFailed(let msg):
-            return "ffprobe execution failed: \(msg)"
-        case .decodingFailed(let msg):
-            return "Failed to parse media probe metadata: \(msg)"
+            return "Engine Missing: ffprobe binary not found. Please install ffmpeg or configure paths in Settings."
         case .fileNotFound(let url):
-            return "Media file not found at: \(url.path)"
+            return "File Not Found: '\(url.lastPathComponent)' could not be located or accessed."
+        case .permissionDenied(let url):
+            return "Permission Denied: Strata does not have permission to read '\(url.lastPathComponent)'."
+        case .unsupportedFormat(let ext):
+            if ext.isEmpty {
+                return "Unsupported File Format: Strata only supports video, audio, and subtitle media files."
+            } else {
+                return "Unsupported File Format: '.\(ext)' is not a supported media file. Strata works with video, audio, and subtitle files."
+            }
+        case .emptyFile(let name):
+            return "Empty File: '\(name)' contains no data (0 bytes)."
+        case .noStreamsFound(let name):
+            return "No Media Streams: No playable audio, video, or subtitle tracks were found in '\(name)'."
+        case .corruptedMedia(let detail):
+            let trimmed = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                return "Corrupted Media: The file structure is damaged, truncated, or unreadable."
+            } else {
+                return "Corrupted Media: \(trimmed)"
+            }
+        case .executionFailed(let msg):
+            let trimmed = msg.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                return "Unsupported or Corrupted File: Unable to inspect media streams."
+            }
+            return "Media Inspection Failed: \(trimmed)"
+        case .decodingFailed(let msg):
+            return "Corrupted Metadata: Unable to parse stream metadata (\(msg))."
         }
     }
 }
@@ -71,6 +99,18 @@ private struct FFprobeChapter: Decodable {
 public final class ProbePipeline {
     public static let shared = ProbePipeline()
     public static let supportedSubtitleExtensions: [String] = ["srt", "ass", "ssa", "vtt", "sub", "idx"]
+    public static let commonMediaExtensions: Set<String> = [
+        // Video containers & streams
+        "mp4", "m4v", "mov", "mkv", "webm", "avi", "wmv", "flv", "f4v",
+        "ts", "mts", "m2ts", "vob", "ogv", "3gp", "3g2", "asf", "rm", "rmvb",
+        "divx", "mpg", "mpeg", "m2v", "m4u", "m4p", "dv",
+        // Audio containers & streams
+        "mp3", "m4a", "aac", "flac", "wav", "aiff", "aif", "ac3", "eac3",
+        "ec3", "dts", "dtshd", "dtsma", "truehd", "thd", "opus", "ogg", "oga",
+        "wma", "alac", "mka", "ape", "wv", "caf", "amr", "pcm", "m4b", "m4r",
+        // Subtitle formats
+        "srt", "ass", "ssa", "vtt", "sub", "sup", "idx", "smi", "ttml", "dfxp"
+    ]
     private static let jsonDecoder = JSONDecoder()
     
     public init() {}
@@ -81,12 +121,21 @@ public final class ProbePipeline {
             throw ProbeError.fileNotFound(fileURL)
         }
         
+        guard FileManager.default.isReadableFile(atPath: fileURL.path) else {
+            throw ProbeError.permissionDenied(fileURL)
+        }
+        
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
+           let size = attrs[.size] as? UInt64, size == 0 {
+            throw ProbeError.emptyFile(fileURL.lastPathComponent)
+        }
+        
         guard let ffprobePath = FFmpegLocator.shared.ffprobePath else {
             throw ProbeError.ffprobeNotFound
         }
         
         let arguments = [
-            "-v", "quiet",
+            "-v", "error",
             "-print_format", "json",
             "-show_format",
             "-show_streams",
@@ -114,8 +163,33 @@ public final class ProbePipeline {
         
         if process.terminationStatus != 0 {
             let errData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-            let errString = String(data: errData, encoding: .utf8) ?? "Exit code \(process.terminationStatus)"
-            throw ProbeError.executionFailed(errString)
+            let rawStderr = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let ext = fileURL.pathExtension.lowercased()
+            
+            // Check if extension is not recognized as a media format
+            if !Self.commonMediaExtensions.contains(ext) {
+                throw ProbeError.unsupportedFormat(extension: fileURL.pathExtension.uppercased())
+            }
+            
+            if rawStderr.localizedCaseInsensitiveContains("Invalid data found when processing input") {
+                throw ProbeError.corruptedMedia("The media file structure is invalid or corrupt.")
+            } else if rawStderr.localizedCaseInsensitiveContains("moov atom not found") {
+                throw ProbeError.corruptedMedia("Missing index header (moov atom not found). The file may be incomplete or still downloading.")
+            } else if rawStderr.localizedCaseInsensitiveContains("EBML") || rawStderr.localizedCaseInsensitiveContains("header") {
+                throw ProbeError.corruptedMedia("Damaged or truncated container header.")
+            } else if rawStderr.localizedCaseInsensitiveContains("Permission denied") {
+                throw ProbeError.permissionDenied(fileURL)
+            } else if rawStderr.localizedCaseInsensitiveContains("No such file") {
+                throw ProbeError.fileNotFound(fileURL)
+            } else if rawStderr.isEmpty {
+                throw ProbeError.corruptedMedia("Unable to read media streams.")
+            } else {
+                var cleaned = rawStderr
+                if let colonRange = cleaned.range(of: ": ") {
+                    cleaned = String(cleaned[colonRange.upperBound...])
+                }
+                throw ProbeError.corruptedMedia(cleaned)
+            }
         }
         
         let probeResult: FFprobeOutput
@@ -125,7 +199,11 @@ public final class ProbePipeline {
             throw ProbeError.decodingFailed(error.localizedDescription)
         }
         
-        return buildMediaFile(from: probeResult, fileURL: fileURL)
+        let mediaFile = buildMediaFile(from: probeResult, fileURL: fileURL)
+        if mediaFile.tracks.isEmpty {
+            throw ProbeError.noStreamsFound(fileURL.lastPathComponent)
+        }
+        return mediaFile
     }
     
     /// Probes an external file (video, audio, or subtitle) and returns its streams as external MediaTrack objects.
@@ -178,6 +256,9 @@ public final class ProbePipeline {
     public func probeSubtitle(fileURL: URL, streamIndex: Int) async throws -> MediaTrack {
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
             throw ProbeError.fileNotFound(fileURL)
+        }
+        guard FileManager.default.isReadableFile(atPath: fileURL.path) else {
+            throw ProbeError.permissionDenied(fileURL)
         }
         
         let ext = fileURL.pathExtension.lowercased()

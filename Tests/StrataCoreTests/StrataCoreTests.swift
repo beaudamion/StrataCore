@@ -349,4 +349,26 @@ struct StrataCoreTests {
         #expect(args.contains("1:0"))
         #expect(args.contains("2:0"))
     }
+    
+    @Test("Probe Error Diagnostic Descriptions")
+    func testProbeErrorDescriptions() {
+        let unsupported = ProbeError.unsupportedFormat(extension: "PDF")
+        #expect(unsupported.errorDescription?.contains("Unsupported File Format: '.PDF' is not a supported media file") == true)
+        
+        let empty = ProbeError.emptyFile("blank.mp4")
+        #expect(empty.errorDescription == "Empty File: 'blank.mp4' contains no data (0 bytes).")
+        
+        let noStreams = ProbeError.noStreamsFound("dummy.mkv")
+        #expect(noStreams.errorDescription == "No Media Streams: No playable audio, video, or subtitle tracks were found in 'dummy.mkv'.")
+        
+        let missing = ProbeError.fileNotFound(URL(fileURLWithPath: "/tmp/nonexistent.mkv"))
+        #expect(missing.errorDescription?.contains("File Not Found: 'nonexistent.mkv'") == true)
+        
+        let corrupt = ProbeError.corruptedMedia("Missing index header (moov atom not found).")
+        #expect(corrupt.errorDescription == "Corrupted Media: Missing index header (moov atom not found).")
+        
+        // Assert no error contains the legacy unhelpful string "ffprobe execution failed:"
+        let legacyExec = ProbeError.executionFailed("Exit code 1")
+        #expect(legacyExec.errorDescription?.contains("ffprobe execution failed:") == false)
+    }
 }
