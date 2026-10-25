@@ -5,6 +5,7 @@ public enum ProbeError: LocalizedError {
     case fileNotFound(URL)
     case permissionDenied(URL)
     case unsupportedFormat(extension: String)
+    case unsupportedImage(extension: String)
     case emptyFile(String)
     case noStreamsFound(String)
     case corruptedMedia(String)
@@ -19,6 +20,12 @@ public enum ProbeError: LocalizedError {
             return "File Not Found: '\(url.lastPathComponent)' could not be located or accessed."
         case .permissionDenied(let url):
             return "Permission Denied: Strata does not have permission to read '\(url.lastPathComponent)'."
+        case .unsupportedImage(let ext):
+            if ext.isEmpty {
+                return "Unsupported Image Format: Static images are not supported. Strata works with video, audio, and subtitle files."
+            } else {
+                return "Unsupported Image Format: '.\(ext)' is a static image. Strata works with video, audio, and subtitle files."
+            }
         case .unsupportedFormat(let ext):
             if ext.isEmpty {
                 return "Unsupported File Format: Strata only supports video, audio, and subtitle media files."
@@ -103,13 +110,22 @@ public final class ProbePipeline {
         // Video containers & streams
         "mp4", "m4v", "mov", "mkv", "webm", "avi", "wmv", "flv", "f4v",
         "ts", "mts", "m2ts", "vob", "ogv", "3gp", "3g2", "asf", "rm", "rmvb",
-        "divx", "mpg", "mpeg", "m2v", "m4u", "m4p", "dv",
+        "divx", "mpg", "mpeg", "m2v", "m4u", "m4p", "dv", "mxf", "nut", "gif",
+        "amv", "y4m",
         // Audio containers & streams
         "mp3", "m4a", "aac", "flac", "wav", "aiff", "aif", "ac3", "eac3",
         "ec3", "dts", "dtshd", "dtsma", "truehd", "thd", "opus", "ogg", "oga",
         "wma", "alac", "mka", "ape", "wv", "caf", "amr", "pcm", "m4b", "m4r",
         // Subtitle formats
         "srt", "ass", "ssa", "vtt", "sub", "sup", "idx", "smi", "ttml", "dfxp"
+    ]
+    public static let unsupportedImageExtensions: Set<String> = [
+        "png", "jpg", "jpeg", "jpe", "jif", "jfif", "jfi",
+        "heic", "heif", "hif", "tiff", "tif", "bmp", "dib",
+        "webp", "svg", "svgz", "ico", "cur", "icns", "avif",
+        "psd", "psb", "ai", "eps", "raw", "cr2", "cr3", "nef",
+        "nrw", "arw", "srf", "sr2", "orf", "rw2", "pef", "dng",
+        "raf", "exr", "hdr", "jp2", "j2k", "jpf", "jpx", "jpm"
     ]
     private static let jsonDecoder = JSONDecoder()
     
@@ -123,6 +139,11 @@ public final class ProbePipeline {
         
         guard FileManager.default.isReadableFile(atPath: fileURL.path) else {
             throw ProbeError.permissionDenied(fileURL)
+        }
+        
+        let ext = fileURL.pathExtension.lowercased()
+        if Self.unsupportedImageExtensions.contains(ext) {
+            throw ProbeError.unsupportedImage(extension: fileURL.pathExtension.uppercased())
         }
         
         if let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
@@ -197,6 +218,13 @@ public final class ProbePipeline {
             probeResult = try Self.jsonDecoder.decode(FFprobeOutput.self, from: data)
         } catch {
             throw ProbeError.decodingFailed(error.localizedDescription)
+        }
+        
+        let formatName = probeResult.format?.format_name?.lowercased() ?? ""
+        let isImageDemuxer = formatName.contains("image2") || formatName.contains("png_pipe") || formatName.contains("jpeg_pipe") || formatName.contains("bmp_pipe") || formatName.contains("tiff_pipe")
+        let hasNoAudio = (probeResult.streams?.filter { $0.codec_type == "audio" }.isEmpty) ?? true
+        if (isImageDemuxer && hasNoAudio) || Self.unsupportedImageExtensions.contains(ext) {
+            throw ProbeError.unsupportedImage(extension: fileURL.pathExtension.uppercased())
         }
         
         let mediaFile = buildMediaFile(from: probeResult, fileURL: fileURL)
