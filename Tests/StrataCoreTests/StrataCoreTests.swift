@@ -355,6 +355,16 @@ struct StrataCoreTests {
         let unsupported = ProbeError.unsupportedFormat(extension: "PDF")
         #expect(unsupported.errorDescription?.contains("Unsupported File Format: '.PDF' is not a supported media file") == true)
         
+        let unsupportedImg = ProbeError.unsupportedImage(extension: "PNG")
+        #expect(unsupportedImg.errorDescription?.contains("Unsupported Image Format: '.PNG' is a static image") == true)
+        
+        #expect(ProbePipeline.unsupportedImageExtensions.contains("png"))
+        #expect(ProbePipeline.unsupportedImageExtensions.contains("jpg"))
+        #expect(ProbePipeline.unsupportedImageExtensions.contains("heic"))
+        #expect(ProbePipeline.unsupportedImageExtensions.contains("webp"))
+        #expect(!ProbePipeline.unsupportedImageExtensions.contains("gif"))
+        #expect(ProbePipeline.commonMediaExtensions.contains("gif"))
+        
         let empty = ProbeError.emptyFile("blank.mp4")
         #expect(empty.errorDescription == "Empty File: 'blank.mp4' contains no data (0 bytes).")
         

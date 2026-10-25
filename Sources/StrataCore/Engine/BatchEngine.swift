@@ -42,13 +42,15 @@ public final class BatchEngine: ObservableObject {
     }
     
     public func addFiles(_ urls: [URL]) {
-        var unsupportedFiles: [URL] = []
+        var unsupportedFiles: [(url: URL, isImage: Bool)] = []
         var validURLs: [URL] = []
         
         for url in urls {
             let ext = url.pathExtension.lowercased()
-            if !ProbePipeline.commonMediaExtensions.contains(ext) {
-                unsupportedFiles.append(url)
+            if ProbePipeline.unsupportedImageExtensions.contains(ext) {
+                unsupportedFiles.append((url: url, isImage: true))
+            } else if !ProbePipeline.commonMediaExtensions.contains(ext) {
+                unsupportedFiles.append((url: url, isImage: false))
             } else {
                 validURLs.append(url)
             }
@@ -56,14 +58,17 @@ public final class BatchEngine: ObservableObject {
         
         if !unsupportedFiles.isEmpty {
             if unsupportedFiles.count == 1 {
-                let ext = unsupportedFiles[0].pathExtension.uppercased()
-                if ext.isEmpty {
+                let first = unsupportedFiles[0]
+                let ext = first.url.pathExtension.uppercased()
+                if first.isImage {
+                    self.errorMessage = "Unsupported Image Format: '.\(ext)' is a static image. Strata works with video, audio, and subtitle files."
+                } else if ext.isEmpty {
                     self.errorMessage = "Unsupported File Format: The selected file is not a supported media file."
                 } else {
                     self.errorMessage = "Unsupported File Format: '.\(ext)' is not a supported media file. Strata works with video, audio, and subtitle files."
                 }
             } else {
-                let exts = Array(Set(unsupportedFiles.map { "'.\($0.pathExtension.uppercased())'" })).sorted().joined(separator: ", ")
+                let exts = Array(Set(unsupportedFiles.map { "'.\($0.url.pathExtension.uppercased())'" })).sorted().joined(separator: ", ")
                 self.errorMessage = "Unsupported File Formats: \(exts) are not supported media files and were not added."
             }
         }
