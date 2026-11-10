@@ -1,7 +1,7 @@
 import Foundation
 import SwiftUI
 
-public enum MediaType: String, Codable, CaseIterable {
+public enum MediaType: String, Codable, CaseIterable, Sendable {
     case video = "video"
     case audio = "audio"
     case subtitle = "subtitle"
@@ -43,7 +43,7 @@ public enum MediaType: String, Codable, CaseIterable {
     }
 }
 
-public enum TrackAction: String, Codable, CaseIterable, Identifiable {
+public enum TrackAction: String, Codable, CaseIterable, Identifiable, Sendable {
     // Universal
     case copy = "copy"
     
@@ -75,11 +75,11 @@ public enum TrackAction: String, Codable, CaseIterable, Identifiable {
         case .copy:
             return "Passthrough (Copy)"
         case .transcodeH264_VT:
-            return "H.264 (VideoToolbox)"
+            return "H.264"
         case .transcodeHEVC_VT:
-            return "HEVC / H.265 (VideoToolbox)"
+            return "HEVC / H.265"
         case .transcodeProRes:
-            return "Apple ProRes 422"
+            return "Apple ProRes"
         case .transcodeAAC_Stereo:
             return "AAC Stereo"
         case .transcodeAAC_51:
@@ -159,9 +159,199 @@ public enum TrackAction: String, Codable, CaseIterable, Identifiable {
             return false
         }
     }
+    
+    public var supportsVideoConfig: Bool {
+        switch self {
+        case .transcodeH264_VT, .transcodeHEVC_VT, .transcodeProRes:
+            return true
+        default:
+            return false
+        }
+    }
+    
+    public var supportsConfig: Bool {
+        supportsAudioConfig || supportsVideoConfig
+    }
 }
 
-public struct AudioEncodingConfig: Hashable, Codable {
+public enum VideoColorSpace: String, Codable, CaseIterable, Identifiable, Sendable {
+    case auto = "auto"
+    case rec709 = "rec709"
+    case rec601NTSC = "rec601_ntsc"
+    case rec601PAL = "rec601_pal"
+    case rec2020 = "rec2020"
+    case rec2020HLG = "rec2020_hlg"
+    case rec2020PQ = "rec2020_pq"
+    
+    public var id: String { rawValue }
+    
+    public var displayName: String {
+        switch self {
+        case .auto: return "Original / Auto"
+        case .rec709: return "Rec. 709 (1-1-1)"
+        case .rec601NTSC: return "Rec. 601 (NTSC)"
+        case .rec601PAL: return "Rec. 601 (PAL)"
+        case .rec2020: return "Rec. 2020 (SDR)"
+        case .rec2020HLG: return "Rec. 2020 HLG (10-bit)"
+        case .rec2020PQ: return "Rec. 2020 PQ (HDR10)"
+        }
+    }
+    
+    public var ffPrimaries: String? {
+        switch self {
+        case .auto: return nil
+        case .rec709: return "bt709"
+        case .rec601NTSC: return "smpte170m"
+        case .rec601PAL: return "bt470bg"
+        case .rec2020, .rec2020HLG, .rec2020PQ: return "bt2020"
+        }
+    }
+    
+    public var ffTransfer: String? {
+        switch self {
+        case .auto: return nil
+        case .rec709: return "bt709"
+        case .rec601NTSC: return "smpte170m"
+        case .rec601PAL: return "bt470bg"
+        case .rec2020: return "bt2020-10"
+        case .rec2020HLG: return "arib-std-b67"
+        case .rec2020PQ: return "smpte2084"
+        }
+    }
+    
+    public var ffMatrix: String? {
+        switch self {
+        case .auto: return nil
+        case .rec709: return "bt709"
+        case .rec601NTSC: return "smpte170m"
+        case .rec601PAL: return "bt470bg"
+        case .rec2020, .rec2020HLG, .rec2020PQ: return "bt2020nc"
+        }
+    }
+}
+
+public enum VideoEntropyMode: String, Codable, CaseIterable, Identifiable, Sendable {
+    case auto = "auto"
+    case cabac = "cabac"
+    case cavlc = "cavlc"
+    
+    public var id: String { rawValue }
+    
+    public var displayName: String {
+        switch self {
+        case .auto: return "Automatic"
+        case .cabac: return "CABAC"
+        case .cavlc: return "CAVLC"
+        }
+    }
+}
+
+public struct VideoEncodingConfig: Hashable, Codable, Sendable {
+    public var bitrate: String // "auto" or kbps string like "15000k"
+    public var frameRate: String? // "24000/1001", "24", "25", "30000/1001", "30", "50", "60000/1001", "60", or nil for Auto
+    public var colorSpace: VideoColorSpace? // nil / .auto for Original / Auto
+    public var profile: String? // H.264: high/main/baseline/constrained_*; HEVC: main/main10/main42210; ProRes: 0..5
+    public var entropyMode: VideoEntropyMode? // H.264 only (.cabac / .cavlc / .auto)
+    public var keyFrameInterval: Int? // nil = Automatic, or positive GOP frame count
+    public var multiPass: Bool // H.264 / HEVC 2-pass encoding
+    
+    public init(
+        bitrate: String = "auto",
+        frameRate: String? = nil,
+        colorSpace: VideoColorSpace? = nil,
+        profile: String? = nil,
+        entropyMode: VideoEntropyMode? = nil,
+        keyFrameInterval: Int? = nil,
+        multiPass: Bool = false
+    ) {
+        self.bitrate = bitrate
+        self.frameRate = frameRate
+        self.colorSpace = colorSpace
+        self.profile = profile
+        self.entropyMode = entropyMode
+        self.keyFrameInterval = keyFrameInterval
+        self.multiPass = multiPass
+    }
+    
+    public static func `default`(for action: TrackAction) -> VideoEncodingConfig {
+        switch action {
+        case .transcodeH264_VT:
+            return VideoEncodingConfig(
+                bitrate: "auto",
+                frameRate: nil,
+                colorSpace: nil,
+                profile: "high",
+                entropyMode: .cabac,
+                keyFrameInterval: nil,
+                multiPass: false
+            )
+        case .transcodeHEVC_VT:
+            return VideoEncodingConfig(
+                bitrate: "auto",
+                frameRate: nil,
+                colorSpace: nil,
+                profile: "main",
+                entropyMode: nil,
+                keyFrameInterval: nil,
+                multiPass: false
+            )
+        case .transcodeProRes:
+            return VideoEncodingConfig(
+                bitrate: "auto",
+                frameRate: nil,
+                colorSpace: nil,
+                profile: "2",
+                entropyMode: nil,
+                keyFrameInterval: nil,
+                multiPass: false
+            )
+        default:
+            return VideoEncodingConfig()
+        }
+    }
+    
+    public mutating func sanitize(for action: TrackAction) {
+        switch action {
+        case .transcodeH264_VT:
+            let validProfiles = ["auto", "high", "main", "baseline", "constrained_high", "constrained_baseline"]
+            if let prof = profile, !validProfiles.contains(prof) {
+                profile = "high"
+            } else if profile == nil {
+                profile = "high"
+            }
+            if profile == "baseline" || profile == "constrained_baseline" {
+                if entropyMode == .cabac {
+                    entropyMode = .cavlc
+                }
+            } else if entropyMode == nil {
+                entropyMode = .cabac
+            }
+        case .transcodeHEVC_VT:
+            let validProfiles = ["auto", "main", "main10", "main42210"]
+            if let prof = profile, !validProfiles.contains(prof) {
+                profile = "main"
+            } else if profile == nil {
+                profile = "main"
+            }
+            entropyMode = nil
+        case .transcodeProRes:
+            let validProfiles = ["0", "1", "2", "3", "4", "5"]
+            if let prof = profile, !validProfiles.contains(prof) {
+                profile = "2"
+            } else if profile == nil {
+                profile = "2"
+            }
+            bitrate = "auto"
+            entropyMode = nil
+            keyFrameInterval = nil
+            multiPass = false
+        default:
+            break
+        }
+    }
+}
+
+public struct AudioEncodingConfig: Hashable, Codable, Sendable {
     public var bitrate: String // "128k", "192k", "256k", "320k", "V0", "V2"
     public var sampleRate: String? // "44100", "48000", "96000", or nil for Auto
     public var channels: Int? // 1, 2, 6, or nil for Auto
@@ -210,7 +400,7 @@ public struct AudioEncodingConfig: Hashable, Codable {
     }
 }
 
-public struct MediaTrack: Identifiable, Hashable, Codable {
+public struct MediaTrack: Identifiable, Hashable, Codable, Sendable {
     public let id: UUID
     public var streamIndex: Int
     public var mediaType: MediaType
@@ -241,6 +431,7 @@ public struct MediaTrack: Identifiable, Hashable, Codable {
     public var isSelected: Bool
     public var action: TrackAction
     public var audioConfig: AudioEncodingConfig
+    public var videoConfig: VideoEncodingConfig
     
     // External source (e.g. imported .srt, .ass)
     public var isExternal: Bool
@@ -269,6 +460,7 @@ public struct MediaTrack: Identifiable, Hashable, Codable {
         isSelected: Bool = true,
         action: TrackAction = .copy,
         audioConfig: AudioEncodingConfig? = nil,
+        videoConfig: VideoEncodingConfig? = nil,
         isExternal: Bool = false,
         externalURL: URL? = nil
     ) {
@@ -294,6 +486,7 @@ public struct MediaTrack: Identifiable, Hashable, Codable {
         self.isSelected = isSelected
         self.action = action
         self.audioConfig = audioConfig ?? AudioEncodingConfig.default(for: action)
+        self.videoConfig = videoConfig ?? VideoEncodingConfig.default(for: action)
         self.isExternal = isExternal
         self.externalURL = externalURL
     }
