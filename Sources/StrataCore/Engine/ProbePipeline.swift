@@ -63,24 +63,43 @@ private struct FFprobeOutput: Decodable {
     let chapters: [FFprobeChapter]?
 }
 
+private struct FFprobeSideData: Decodable {
+    let side_data_type: String?
+}
+
 private struct FFprobeStream: Decodable {
     let index: Int
     let codec_name: String?
     let codec_long_name: String?
     let codec_type: String?
     let profile: String?
+    let codec_tag_string: String?
+    let level: Int?
     let width: Int?
     let height: Int?
     let r_frame_rate: String?
     let avg_frame_rate: String?
     let pix_fmt: String?
     let color_space: String?
+    let color_primaries: String?
+    let color_transfer: String?
+    let color_range: String?
+    let chroma_location: String?
+    let field_order: String?
+    let sample_aspect_ratio: String?
+    let display_aspect_ratio: String?
+    let bits_per_raw_sample: String?
+    let has_b_frames: Int?
+    let nb_frames: String?
     let channels: Int?
     let channel_layout: String?
     let sample_rate: String?
+    let sample_fmt: String?
+    let bits_per_sample: Int?
     let bit_rate: String?
     let disposition: [String: Int]?
     let tags: [String: String]?
+    let side_data_list: [FFprobeSideData]?
 }
 
 private struct FFprobeFormat: Decodable {
@@ -88,6 +107,7 @@ private struct FFprobeFormat: Decodable {
     let nb_streams: Int?
     let format_name: String?
     let format_long_name: String?
+    let start_time: String?
     let duration: String?
     let size: String?
     let bit_rate: String?
@@ -170,20 +190,36 @@ public final class ProbePipeline {
         
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
+        process.standardInput = FileHandle.nullDevice
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
+        
+        let (terminationStream, terminationContinuation) = AsyncStream<Int32>.makeStream()
+        process.terminationHandler = { terminatedProcess in
+            terminatedProcess.terminationHandler = nil
+            terminationContinuation.yield(terminatedProcess.terminationStatus)
+            terminationContinuation.finish()
+        }
         
         do {
             try process.run()
         } catch {
+            process.terminationHandler = nil
+            terminationContinuation.finish()
             throw ProbeError.executionFailed(error.localizedDescription)
         }
         
         let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        let errData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        var exitStatus: Int32?
+        for await status in terminationStream {
+            exitStatus = status
+            break
+        }
+        process.terminationHandler = nil
+        let finalStatus = exitStatus ?? (process.isRunning ? -1 : process.terminationStatus)
         
-        if process.terminationStatus != 0 {
-            let errData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        if finalStatus != 0 {
             let rawStderr = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let ext = fileURL.pathExtension.lowercased()
             
@@ -313,11 +349,21 @@ public final class ProbePipeline {
             process.executableURL = URL(fileURLWithPath: ffprobePath)
             process.arguments = ["-v", "quiet", "-print_format", "json", "-show_streams", fileURL.path]
             let stdoutPipe = Pipe()
+            process.standardInput = FileHandle.nullDevice
             process.standardOutput = stdoutPipe
+            process.standardError = FileHandle.nullDevice
+            
+            let (terminationStream, terminationContinuation) = AsyncStream<Int32>.makeStream()
+            process.terminationHandler = { terminatedProcess in
+                terminatedProcess.terminationHandler = nil
+                terminationContinuation.yield(terminatedProcess.terminationStatus)
+                terminationContinuation.finish()
+            }
             
             if (try? process.run()) != nil {
                 let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-                process.waitUntilExit()
+                for await _ in terminationStream { break }
+                process.terminationHandler = nil
                 if let output = try? JSONDecoder().decode(FFprobeOutput.self, from: data),
                    let stream = output.streams?.first {
                     let lang = stream.tags?["language"] ?? "und"
@@ -356,6 +402,7 @@ public final class ProbePipeline {
     private func buildMediaFile(from output: FFprobeOutput, fileURL: URL) -> MediaFile {
         let fmt = output.format
         let duration = Double(fmt?.duration ?? "0") ?? 0.0
+        let startTime = Double(fmt?.start_time ?? "0") ?? 0.0
         let size = Int64(fmt?.size ?? "0") ?? (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int64) ?? 0
         let bitRate = Int64(fmt?.bit_rate ?? "0") ?? 0
         let formatName = fmt?.format_name ?? fileURL.pathExtension
@@ -382,8 +429,31 @@ public final class ProbePipeline {
                 
                 let isDef = (stream.disposition?["default"] ?? 0) != 0
                 let isFrc = (stream.disposition?["forced"] ?? 0) != 0
+                let dispFlags = Self.parseDispositionFlags(stream.disposition)
                 
-                let fpsString = formatFrameRate(stream.avg_frame_rate ?? stream.r_frame_rate)
+                let fpsString = formatFrameRate(stream.avg_frame_rate) ?? formatFrameRate(stream.r_frame_rate)
+                let rFpsString = formatFrameRate(stream.r_frame_rate)
+                
+                let cleanTag: String? = {
+                    guard let tag = stream.codec_tag_string,
+                          !tag.isEmpty,
+                          tag != "[0][0][0][0]",
+                          tag != "0x0000" else { return nil }
+                    return tag
+                }()
+                
+                let parsedBitDepth: Int? = Self.resolveBitDepth(
+                    rawBitsPerSample: stream.bits_per_raw_sample,
+                    audioBitsPerSample: stream.bits_per_sample,
+                    pixFmt: stream.pix_fmt,
+                    sampleFmt: stream.sample_fmt,
+                    mediaType: mType
+                )
+                
+                let isDoVi = stream.side_data_list?.contains { sd in
+                    let t = sd.side_data_type?.lowercased() ?? ""
+                    return t.contains("dovi") || t.contains("dolby vision")
+                } ?? false
                 
                 let track = MediaTrack(
                     streamIndex: stream.index,
@@ -391,19 +461,36 @@ public final class ProbePipeline {
                     codecName: codecName,
                     codecLongName: stream.codec_long_name,
                     profile: stream.profile,
+                    codecTag: cleanTag,
+                    codecLevel: stream.level,
                     width: stream.width,
                     height: stream.height,
                     frameRate: fpsString,
+                    rFrameRate: rFpsString,
                     pixelFormat: stream.pix_fmt,
                     colorSpace: stream.color_space,
+                    colorPrimaries: stream.color_primaries,
+                    colorTransfer: stream.color_transfer,
+                    colorRange: stream.color_range,
+                    chromaLocation: stream.chroma_location,
+                    fieldOrder: stream.field_order,
+                    sampleAspectRatio: (stream.sample_aspect_ratio == "0:1") ? nil : stream.sample_aspect_ratio,
+                    displayAspectRatio: (stream.display_aspect_ratio == "0:1") ? nil : stream.display_aspect_ratio,
+                    bitDepth: parsedBitDepth,
+                    hasBFrames: stream.has_b_frames,
+                    frameCount: stream.nb_frames.flatMap { Int($0) },
+                    isHDRDolbyVision: isDoVi,
                     channels: stream.channels,
                     channelLayout: stream.channel_layout,
                     sampleRate: stream.sample_rate,
+                    sampleFormat: stream.sample_fmt,
                     bitRate: Int64(stream.bit_rate ?? "0"),
                     language: lang,
                     title: title,
                     isDefault: isDef,
                     isForced: isFrc,
+                    dispositionFlags: dispFlags,
+                    tags: stream.tags ?? [:],
                     isSelected: (mType == .video || mType == .audio || mType == .subtitle),
                     action: .copy,
                     isExternal: false,
@@ -431,11 +518,64 @@ public final class ProbePipeline {
             containerFormat: formatName,
             containerLongName: formatLong,
             duration: duration,
+            startTime: startTime,
             overallBitRate: bitRate,
             tags: tags,
             tracks: tracks,
             chapters: chapters
         )
+    }
+    
+    private static func resolveBitDepth(
+        rawBitsPerSample: String?,
+        audioBitsPerSample: Int?,
+        pixFmt: String?,
+        sampleFmt: String?,
+        mediaType: MediaType
+    ) -> Int? {
+        if let raw = rawBitsPerSample, let val = Int(raw), val > 0 {
+            return val
+        }
+        if mediaType == .audio {
+            if let abps = audioBitsPerSample, abps > 0 {
+                return abps
+            }
+            let sf = sampleFmt?.lowercased() ?? ""
+            if sf.contains("16") { return 16 }
+            if sf.contains("24") { return 24 }
+            if sf.contains("32") || sf.contains("flt") { return 32 }
+            if sf.contains("64") || sf.contains("dbl") { return 64 }
+            if sf.contains("8") { return 8 }
+        } else if mediaType == .video {
+            let pf = pixFmt?.lowercased() ?? ""
+            if pf.contains("12") { return 12 }
+            if pf.contains("10") || pf.contains("p010") || pf.contains("p210") || pf.contains("p410") { return 10 }
+            if !pf.isEmpty { return 8 }
+        }
+        return nil
+    }
+    
+    private static func parseDispositionFlags(_ raw: [String: Int]?) -> [String] {
+        guard let raw else { return [] }
+        let order: [(key: String, label: String)] = [
+            ("default", "Default"),
+            ("forced", "Forced"),
+            ("original", "Original"),
+            ("dub", "Dub"),
+            ("comment", "Commentary"),
+            ("hearing_impaired", "SDH / Hearing Impaired"),
+            ("visual_impaired", "Audio Description"),
+            ("captions", "Captions"),
+            ("descriptions", "Descriptions"),
+            ("lyrics", "Lyrics"),
+            ("karaoke", "Karaoke"),
+            ("attached_pic", "Attached Cover Art")
+        ]
+        var result: [String] = []
+        for entry in order where (raw[entry.key] ?? 0) != 0 {
+            result.append(entry.label)
+        }
+        return result
     }
     
     private func formatFrameRate(_ rate: String?) -> String? {

@@ -462,20 +462,37 @@ public struct MediaTrack: Identifiable, Hashable, Codable, Sendable {
     public var width: Int?
     public var height: Int?
     public var frameRate: String?
+    public var rFrameRate: String?
     public var pixelFormat: String?
     public var colorSpace: String?
+    public var colorPrimaries: String?
+    public var colorTransfer: String?
+    public var colorRange: String?
+    public var chromaLocation: String?
+    public var fieldOrder: String?
+    public var sampleAspectRatio: String?
+    public var displayAspectRatio: String?
+    public var bitDepth: Int?
+    public var hasBFrames: Int?
+    public var frameCount: Int?
+    public var isHDRDolbyVision: Bool
     
     // Audio specific
     public var channels: Int?
     public var channelLayout: String?
     public var sampleRate: String?
+    public var sampleFormat: String?
     
     // Common
+    public var codecTag: String?
+    public var codecLevel: Int?
     public var bitRate: Int64?
     public var language: String
     public var title: String
     public var isDefault: Bool
     public var isForced: Bool
+    public var dispositionFlags: [String]
+    public var tags: [String: String]
     
     // User configuration
     public var isSelected: Bool
@@ -494,19 +511,36 @@ public struct MediaTrack: Identifiable, Hashable, Codable, Sendable {
         codecName: String,
         codecLongName: String? = nil,
         profile: String? = nil,
+        codecTag: String? = nil,
+        codecLevel: Int? = nil,
         width: Int? = nil,
         height: Int? = nil,
         frameRate: String? = nil,
+        rFrameRate: String? = nil,
         pixelFormat: String? = nil,
         colorSpace: String? = nil,
+        colorPrimaries: String? = nil,
+        colorTransfer: String? = nil,
+        colorRange: String? = nil,
+        chromaLocation: String? = nil,
+        fieldOrder: String? = nil,
+        sampleAspectRatio: String? = nil,
+        displayAspectRatio: String? = nil,
+        bitDepth: Int? = nil,
+        hasBFrames: Int? = nil,
+        frameCount: Int? = nil,
+        isHDRDolbyVision: Bool = false,
         channels: Int? = nil,
         channelLayout: String? = nil,
         sampleRate: String? = nil,
+        sampleFormat: String? = nil,
         bitRate: Int64? = nil,
         language: String = "und",
         title: String = "",
         isDefault: Bool = false,
         isForced: Bool = false,
+        dispositionFlags: [String] = [],
+        tags: [String: String] = [:],
         isSelected: Bool = true,
         action: TrackAction = .copy,
         audioConfig: AudioEncodingConfig? = nil,
@@ -520,19 +554,36 @@ public struct MediaTrack: Identifiable, Hashable, Codable, Sendable {
         self.codecName = codecName
         self.codecLongName = codecLongName
         self.profile = profile
+        self.codecTag = codecTag
+        self.codecLevel = codecLevel
         self.width = width
         self.height = height
         self.frameRate = frameRate
+        self.rFrameRate = rFrameRate
         self.pixelFormat = pixelFormat
         self.colorSpace = colorSpace
+        self.colorPrimaries = colorPrimaries
+        self.colorTransfer = colorTransfer
+        self.colorRange = colorRange
+        self.chromaLocation = chromaLocation
+        self.fieldOrder = fieldOrder
+        self.sampleAspectRatio = sampleAspectRatio
+        self.displayAspectRatio = displayAspectRatio
+        self.bitDepth = bitDepth
+        self.hasBFrames = hasBFrames
+        self.frameCount = frameCount
+        self.isHDRDolbyVision = isHDRDolbyVision
         self.channels = channels
         self.channelLayout = channelLayout
         self.sampleRate = sampleRate
+        self.sampleFormat = sampleFormat
         self.bitRate = bitRate
         self.language = language
         self.title = title
         self.isDefault = isDefault
         self.isForced = isForced
+        self.dispositionFlags = dispositionFlags
+        self.tags = tags
         self.isSelected = isSelected
         self.action = action
         self.audioConfig = audioConfig ?? AudioEncodingConfig.default(for: action)
@@ -589,6 +640,159 @@ public struct MediaTrack: Identifiable, Hashable, Codable, Sendable {
         case .other:
             return "Stream"
         }
+    }
+    
+    public var hasAlphaChannel: Bool {
+        let pf = pixelFormat?.lowercased() ?? ""
+        return pf.contains("yuva") || pf.contains("rgba") || pf.contains("bgra") || pf.contains("argb") || pf.contains("abgr") || pf.contains("ayuv") || pf.contains("gbrap")
+    }
+    
+    public var dynamicRangeBadge: String? {
+        guard mediaType == .video else { return nil }
+        if isHDRDolbyVision { return "Dolby Vision" }
+        switch colorTransfer?.lowercased() {
+        case "smpte2084": return "HDR10 (PQ)"
+        case "arib-std-b67": return "HLG (HDR)"
+        default: return "SDR"
+        }
+    }
+    
+    public var codecLevelDisplay: String? {
+        guard let level = codecLevel, level > 0 else { return nil }
+        let lower = codecName.lowercased()
+        if lower == "hevc" || lower == "h265" {
+            let major = level / 30
+            let minor = (level % 30) / 3
+            return "\(major).\(minor)"
+        } else if lower == "h264" || lower == "avc" || lower == "avc1" {
+            return String(format: "%.1f", Double(level) / 10.0)
+        }
+        return "\(level)"
+    }
+    
+    public var chromaSubsamplingDisplay: String? {
+        guard let pf = pixelFormat?.lowercased(), !pf.isEmpty else { return nil }
+        let sub: String
+        if pf.contains("420") || pf.contains("nv12") || pf.contains("nv21") || pf.contains("p010") {
+            sub = "4:2:0"
+        } else if pf.contains("422") || pf.contains("p210") || pf.contains("yuyv") || pf.contains("uyvy") {
+            sub = "4:2:2"
+        } else if pf.contains("444") || pf.contains("p410") || pf.contains("yuva444") {
+            sub = "4:4:4"
+        } else if pf.contains("rgb") || pf.contains("bgr") || pf.contains("argb") || pf.contains("abgr") {
+            sub = "RGB"
+        } else {
+            return pf
+        }
+        return hasAlphaChannel ? "\(sub) + Alpha" : sub
+    }
+    
+    public var formattedFieldOrder: String? {
+        guard let fo = fieldOrder?.lowercased(), !fo.isEmpty, fo != "unknown" else { return nil }
+        switch fo {
+        case "progressive": return "Progressive"
+        case "tt", "tb": return "Interlaced (Top First)"
+        case "bb", "bt": return "Interlaced (Bottom First)"
+        default: return fo
+        }
+    }
+    
+    public var formattedColorSpec: String? {
+        let p = colorPrimaries?.lowercased()
+        let t = colorTransfer?.lowercased()
+        let m = colorSpace?.lowercased()
+        
+        if p == "bt709" && (t == nil || t == "bt709") && (m == nil || m == "bt709") {
+            return "Rec. 709 (1-1-1)"
+        } else if p == "bt2020" && t == "smpte2084" {
+            return "Rec. 2020 PQ / HDR10 (9-16-9)"
+        } else if p == "bt2020" && t == "arib-std-b67" {
+            return "Rec. 2020 HLG (9-18-9)"
+        } else if p == "bt2020" {
+            return "Rec. 2020 (SDR)"
+        } else if p == "smpte170m" || m == "smpte170m" {
+            return "Rec. 601 NTSC (6-6-6)"
+        } else if p == "bt470bg" || m == "bt470bg" {
+            return "Rec. 601 PAL (5-5-5)"
+        }
+        
+        let parts = [
+            p.map(Self.readableColorToken),
+            t.map(Self.readableColorToken),
+            m.map(Self.readableColorToken)
+        ].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " / ")
+    }
+    
+    private static func readableColorToken(_ raw: String) -> String {
+        switch raw {
+        case "bt709": return "BT.709"
+        case "bt2020": return "BT.2020"
+        case "bt2020nc": return "BT.2020 NCL"
+        case "bt2020-10": return "BT.2020 10-bit"
+        case "bt2020-12": return "BT.2020 12-bit"
+        case "smpte2084": return "PQ (ST 2084)"
+        case "arib-std-b67": return "HLG"
+        case "smpte170m": return "SMPTE 170M"
+        case "bt470bg": return "BT.470 BG"
+        case "smpte432": return "Display P3"
+        case "iec61966-2-1": return "sRGB"
+        default: return raw.uppercased()
+        }
+    }
+    
+    public var formattedColorRange: String? {
+        guard let cr = colorRange?.lowercased(), !cr.isEmpty, cr != "unknown" else { return nil }
+        switch cr {
+        case "tv", "mpeg": return "Limited (16–235)"
+        case "pc", "jpeg": return "Full (0–255)"
+        default: return cr
+        }
+    }
+    
+    public var formattedBitRate: String? {
+        guard let br = bitRate, br > 0 else { return nil }
+        return MediaFormatters.formatBitrate(br)
+    }
+    
+    public var formattedSampleRateDisplay: String? {
+        guard let sr = sampleRate, let val = Int(sr), val > 0 else { return nil }
+        let khz = Double(val) / 1000.0
+        return khz.truncatingRemainder(dividingBy: 1) == 0 ? "\(Int(khz)) kHz" : String(format: "%.1f kHz", khz)
+    }
+    
+    public var formattedSampleFormat: String? {
+        guard let sf = sampleFormat?.lowercased(), !sf.isEmpty else { return nil }
+        switch sf {
+        case "fltp", "flt": return "32-bit Float"
+        case "dblp", "dbl": return "64-bit Float"
+        case "s16p", "s16": return "16-bit PCM"
+        case "s24p", "s24": return "24-bit PCM"
+        case "s32p", "s32": return "32-bit PCM"
+        case "u8p", "u8": return "8-bit PCM"
+        default: return sf.uppercased()
+        }
+    }
+    
+    public var encoderName: String? {
+        tagValue(forKeyCaseInsensitive: "encoder")
+    }
+    
+    public var startTimecode: String? {
+        tagValue(forKeyCaseInsensitive: "timecode")
+    }
+    
+    public var isVariableFrameRate: Bool? {
+        guard let avg = frameRate, let real = rFrameRate, !avg.isEmpty, !real.isEmpty else { return nil }
+        return avg != real
+    }
+    
+    private func tagValue(forKeyCaseInsensitive target: String) -> String? {
+        for (k, v) in tags where k.caseInsensitiveCompare(target) == .orderedSame {
+            let trimmed = v.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return nil
     }
     
     public var exportExtension: String {

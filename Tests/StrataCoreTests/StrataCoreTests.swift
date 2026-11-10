@@ -621,4 +621,106 @@ struct StrataCoreTests {
         #expect(hevcPass2.contains("hvc1"))
         #expect(hevcPass2.contains { $0.contains("pass=2:stats=") })
     }
+    
+    @Test("Extended Media Telemetry Formatting and Technical Summary Generation")
+    func testExtendedTelemetryFormatting() {
+        let hevcHDRVideo = MediaTrack(
+            streamIndex: 0,
+            mediaType: .video,
+            codecName: "hevc",
+            codecLongName: "H.265 / HEVC",
+            profile: "Main 10",
+            codecTag: "hvc1",
+            codecLevel: 153,
+            width: 3840,
+            height: 2160,
+            frameRate: "23.98 fps",
+            rFrameRate: "23.98 fps",
+            pixelFormat: "yuv420p10le",
+            colorSpace: "bt2020nc",
+            colorPrimaries: "bt2020",
+            colorTransfer: "smpte2084",
+            colorRange: "tv",
+            chromaLocation: "topleft",
+            fieldOrder: "progressive",
+            sampleAspectRatio: "1:1",
+            displayAspectRatio: "16:9",
+            bitDepth: 10,
+            hasBFrames: 2,
+            frameCount: 144000,
+            isHDRDolbyVision: false,
+            bitRate: 18_500_000,
+            dispositionFlags: ["Default"],
+            tags: ["ENCODER": "x265 3.6", "timecode": "01:00:00:00"]
+        )
+        
+        let proResAlphaVideo = MediaTrack(
+            streamIndex: 0,
+            mediaType: .video,
+            codecName: "prores",
+            profile: "4444 XQ",
+            codecTag: "ap4x",
+            pixelFormat: "yuva444p10le",
+            fieldOrder: "tt",
+            bitDepth: 10,
+            isHDRDolbyVision: true
+        )
+        
+        let audioTrack = MediaTrack(
+            streamIndex: 1,
+            mediaType: .audio,
+            codecName: "aac",
+            profile: "LC",
+            channels: 6,
+            channelLayout: "5.1(side)",
+            sampleRate: "48000",
+            sampleFormat: "fltp",
+            bitRate: 384_000,
+            language: "eng",
+            isDefault: true,
+            dispositionFlags: ["Default"]
+        )
+        
+        #expect(hevcHDRVideo.dynamicRangeBadge == "HDR10 (PQ)")
+        #expect(hevcHDRVideo.codecLevelDisplay == "5.1")
+        #expect(hevcHDRVideo.chromaSubsamplingDisplay == "4:2:0")
+        #expect(hevcHDRVideo.formattedFieldOrder == "Progressive")
+        #expect(hevcHDRVideo.formattedColorSpec == "Rec. 2020 PQ / HDR10 (9-16-9)")
+        #expect(hevcHDRVideo.formattedColorRange == "Limited (16–235)")
+        #expect(hevcHDRVideo.encoderName == "x265 3.6")
+        #expect(hevcHDRVideo.startTimecode == "01:00:00:00")
+        #expect(hevcHDRVideo.isVariableFrameRate == false)
+        
+        #expect(proResAlphaVideo.dynamicRangeBadge == "Dolby Vision")
+        #expect(proResAlphaVideo.hasAlphaChannel == true)
+        #expect(proResAlphaVideo.chromaSubsamplingDisplay == "4:4:4 + Alpha")
+        #expect(proResAlphaVideo.formattedFieldOrder == "Interlaced (Top First)")
+        
+        #expect(audioTrack.formattedSampleRateDisplay == "48 kHz")
+        #expect(audioTrack.formattedSampleFormat == "32-bit Float")
+        #expect(audioTrack.formattedBitRate == "384 kbps")
+        
+        let media = MediaFile(
+            url: URL(fileURLWithPath: "/tmp/Master_Feature.mov"),
+            filename: "Master_Feature.mov",
+            fileSize: 2_500_000_000,
+            containerFormat: "mov,mp4,m4a,3gp,3g2,mj2",
+            containerLongName: "QuickTime / MOV",
+            duration: 3661.25,
+            overallBitRate: 19_200_000,
+            tags: ["writing_application": "StrataMux 1.0", "creation_time": "2026-11-09T12:30:00Z"],
+            tracks: [hevcHDRVideo, audioTrack],
+            chapters: [MediaChapter(id: 0, startTime: 0, endTime: 1200, title: "Act I")]
+        )
+        
+        #expect(media.preciseDuration == "01:01:01.250")
+        #expect(media.dynamicRangeLabel == "HDR10 (PQ)")
+        #expect(media.writingApplication == "StrataMux 1.0")
+        #expect(media.creationDateDisplay != nil)
+        #expect(media.technicalSummaryText.contains("Master_Feature.mov"))
+        #expect(media.technicalSummaryText.contains("QuickTime / MOV"))
+        #expect(media.technicalSummaryText.contains("Rec. 2020 PQ / HDR10"))
+        #expect(media.technicalSummaryText.contains("Chapters (1)"))
+        #expect(media.technicalSummaryText.contains("Act I"))
+    }
 }
