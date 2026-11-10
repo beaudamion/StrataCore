@@ -246,30 +246,57 @@ public enum VideoEntropyMode: String, Codable, CaseIterable, Identifiable, Senda
     }
 }
 
+public enum VideoFieldOrder: String, Codable, CaseIterable, Identifiable, Sendable {
+    case auto = "auto"
+    case progressive = "progressive"
+    case topFirst = "tt"
+    case bottomFirst = "bb"
+    
+    public var id: String { rawValue }
+    
+    public var displayName: String {
+        switch self {
+        case .auto: return "Original / Auto"
+        case .progressive: return "Progressive"
+        case .topFirst: return "Top First"
+        case .bottomFirst: return "Bottom First"
+        }
+    }
+}
+
 public struct VideoEncodingConfig: Hashable, Codable, Sendable {
     public var bitrate: String // "auto" or kbps string like "15000k"
     public var frameRate: String? // "24000/1001", "24", "25", "30000/1001", "30", "50", "60000/1001", "60", or nil for Auto
+    public var fieldOrder: VideoFieldOrder? // nil / .auto, .progressive, .topFirst, .bottomFirst
     public var colorSpace: VideoColorSpace? // nil / .auto for Original / Auto
-    public var profile: String? // H.264: high/main/baseline/constrained_*; HEVC: main/main10/main42210; ProRes: 0..5
-    public var entropyMode: VideoEntropyMode? // H.264 only (.cabac / .cavlc / .auto)
+    public var profile: String? // H.264: auto/high/main/baseline/constrained_*; HEVC: auto/main/main10/main422/main42210; ProRes: 0..5
+    public var entropyMode: VideoEntropyMode? // H.264 only (.auto / .cabac / .cavlc)
     public var keyFrameInterval: Int? // nil = Automatic, or positive GOP frame count
+    public var allowFrameReordering: Bool // B-frames / frame reordering (H.264 non-Baseline & HEVC)
+    public var preserveAlpha: Bool // Preserve alpha channel (ProRes 4444/XQ & HEVC 8-bit 4:2:0)
     public var multiPass: Bool // H.264 / HEVC 2-pass encoding
     
     public init(
         bitrate: String = "auto",
         frameRate: String? = nil,
+        fieldOrder: VideoFieldOrder? = nil,
         colorSpace: VideoColorSpace? = nil,
         profile: String? = nil,
         entropyMode: VideoEntropyMode? = nil,
         keyFrameInterval: Int? = nil,
+        allowFrameReordering: Bool = true,
+        preserveAlpha: Bool = false,
         multiPass: Bool = false
     ) {
         self.bitrate = bitrate
         self.frameRate = frameRate
+        self.fieldOrder = fieldOrder
         self.colorSpace = colorSpace
         self.profile = profile
         self.entropyMode = entropyMode
         self.keyFrameInterval = keyFrameInterval
+        self.allowFrameReordering = allowFrameReordering
+        self.preserveAlpha = preserveAlpha
         self.multiPass = multiPass
     }
     
@@ -279,30 +306,39 @@ public struct VideoEncodingConfig: Hashable, Codable, Sendable {
             return VideoEncodingConfig(
                 bitrate: "auto",
                 frameRate: nil,
+                fieldOrder: nil,
                 colorSpace: nil,
-                profile: "high",
-                entropyMode: .cabac,
+                profile: "auto",
+                entropyMode: .auto,
                 keyFrameInterval: nil,
+                allowFrameReordering: true,
+                preserveAlpha: false,
                 multiPass: false
             )
         case .transcodeHEVC_VT:
             return VideoEncodingConfig(
                 bitrate: "auto",
                 frameRate: nil,
+                fieldOrder: nil,
                 colorSpace: nil,
-                profile: "main",
+                profile: "auto",
                 entropyMode: nil,
                 keyFrameInterval: nil,
+                allowFrameReordering: true,
+                preserveAlpha: false,
                 multiPass: false
             )
         case .transcodeProRes:
             return VideoEncodingConfig(
                 bitrate: "auto",
                 frameRate: nil,
+                fieldOrder: nil,
                 colorSpace: nil,
                 profile: "2",
                 entropyMode: nil,
                 keyFrameInterval: nil,
+                allowFrameReordering: true,
+                preserveAlpha: false,
                 multiPass: false
             )
         default:
@@ -315,25 +351,36 @@ public struct VideoEncodingConfig: Hashable, Codable, Sendable {
         case .transcodeH264_VT:
             let validProfiles = ["auto", "high", "main", "baseline", "constrained_high", "constrained_baseline"]
             if let prof = profile, !validProfiles.contains(prof) {
-                profile = "high"
+                profile = "auto"
             } else if profile == nil {
-                profile = "high"
+                profile = "auto"
             }
             if profile == "baseline" || profile == "constrained_baseline" {
                 if entropyMode == .cabac {
                     entropyMode = .cavlc
                 }
             } else if entropyMode == nil {
-                entropyMode = .cabac
+                entropyMode = .auto
             }
+            if !multiPass && (fieldOrder == .topFirst || fieldOrder == .bottomFirst) {
+                fieldOrder = nil
+            }
+            preserveAlpha = false
         case .transcodeHEVC_VT:
-            let validProfiles = ["auto", "main", "main10", "main42210"]
+            let validProfiles = ["auto", "main", "main10", "main422", "main42210"]
             if let prof = profile, !validProfiles.contains(prof) {
-                profile = "main"
+                profile = "auto"
             } else if profile == nil {
-                profile = "main"
+                profile = "auto"
             }
             entropyMode = nil
+            if fieldOrder == .topFirst || fieldOrder == .bottomFirst {
+                fieldOrder = nil
+            }
+            let canPreserveAlpha = !multiPass && (profile == "auto" || profile == "main")
+            if !canPreserveAlpha {
+                preserveAlpha = false
+            }
         case .transcodeProRes:
             let validProfiles = ["0", "1", "2", "3", "4", "5"]
             if let prof = profile, !validProfiles.contains(prof) {
@@ -345,6 +392,9 @@ public struct VideoEncodingConfig: Hashable, Codable, Sendable {
             entropyMode = nil
             keyFrameInterval = nil
             multiPass = false
+            if profile != "4" && profile != "5" {
+                preserveAlpha = false
+            }
         default:
             break
         }

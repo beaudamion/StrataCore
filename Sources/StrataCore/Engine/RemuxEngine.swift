@@ -267,12 +267,18 @@ public actor RemuxEngine {
         var args: [String] = []
         let useTwoPassEncoder = (cfg.multiPass || pass != nil) && (track.action == .transcodeH264_VT || track.action == .transcodeHEVC_VT)
         let safeSpecTag = spec.replacingOccurrences(of: ":", with: "_")
+        let pfLower = track.pixelFormat?.lowercased() ?? ""
+        let hasAlpha = pfLower.contains("yuva") || pfLower.contains("rgba") || pfLower.contains("bgra") || pfLower.contains("argb") || pfLower.contains("abgr") || pfLower.contains("ayuv") || pfLower.contains("gbrap")
+        
+        var filterParts: [String] = []
+        var setparamsParts: [String] = []
         
         switch track.action {
         case .transcodeH264_VT:
             let validProfiles = ["baseline", "constrained_baseline", "main", "high", "constrained_high", "extended"]
             let rawProfile = cfg.profile?.lowercased()
             let validProf = rawProfile.flatMap { validProfiles.contains($0) ? $0 : nil }
+            let isBaseline: Bool
             
             if useTwoPassEncoder {
                 args += ["-c\(spec)", "libx264"]
@@ -291,10 +297,14 @@ public actor RemuxEngine {
                     args += ["-profile\(spec)", p]
                 }
                 
-                let isBaseline = (x264Profile == "baseline")
+                isBaseline = (x264Profile == "baseline")
                 if let entropy = cfg.entropyMode, entropy != .auto {
                     let coder = (isBaseline && entropy == .cabac) ? "cavlc" : entropy.rawValue
                     args += ["-coder\(spec)", coder]
+                }
+                
+                if isBaseline || !cfg.allowFrameReordering {
+                    args += ["-bf\(spec)", "0"]
                 }
                 
                 args += ["-pix_fmt\(spec)", "yuv420p"]
@@ -302,6 +312,27 @@ public actor RemuxEngine {
                 
                 if let kf = cfg.keyFrameInterval, kf > 0 {
                     args += ["-g\(spec)", "\(kf)"]
+                }
+                
+                if !isBaseline {
+                    switch cfg.fieldOrder {
+                    case .topFirst:
+                        args += ["-flags\(spec)", "+ilme+ildct", "-field_order\(spec)", "tt", "-x264-params\(spec)", "tff=1"]
+                        setparamsParts.append("field_mode=tff")
+                    case .bottomFirst:
+                        args += ["-flags\(spec)", "+ilme+ildct", "-field_order\(spec)", "bb", "-x264-params\(spec)", "bff=1"]
+                        setparamsParts.append("field_mode=bff")
+                    case .progressive:
+                        filterParts.append("yadif=0:-1:1")
+                        setparamsParts.append("field_mode=prog")
+                        args += ["-field_order\(spec)", "progressive"]
+                    case .auto, .none:
+                        break
+                    }
+                } else {
+                    filterParts.append("yadif=0:-1:1")
+                    setparamsParts.append("field_mode=prog")
+                    args += ["-field_order\(spec)", "progressive"]
                 }
                 
                 if let p = pass, (p == 1 || p == 2) {
@@ -316,10 +347,15 @@ public actor RemuxEngine {
                 if let p = validProf {
                     args += ["-profile\(spec)", p]
                 }
-                let isBaseline = (validProf == "baseline" || validProf == "constrained_baseline")
+                isBaseline = (validProf == "baseline" || validProf == "constrained_baseline")
                 if let entropy = cfg.entropyMode, entropy != .auto {
                     let coder = (isBaseline && entropy == .cabac) ? "cavlc" : entropy.rawValue
                     args += ["-coder\(spec)", coder]
+                }
+                if isBaseline || !cfg.allowFrameReordering {
+                    args += ["-bf\(spec)", "0"]
+                } else {
+                    args += ["-bf\(spec)", "2"]
                 }
                 args += ["-pix_fmt\(spec)", "yuv420p"]
                 if let br = normalizedBitrate(cfg.bitrate) {
@@ -328,16 +364,23 @@ public actor RemuxEngine {
                 if let kf = cfg.keyFrameInterval, kf > 0 {
                     args += ["-g\(spec)", "\(kf)"]
                 }
+                // VideoToolbox H.264 outputs progressive frames cleanly
+                filterParts.append("yadif=0:-1:1")
+                setparamsParts.append("field_mode=prog")
+                args += ["-field_order\(spec)", "progressive"]
             }
             
         case .transcodeHEVC_VT:
-            let validProfiles = ["main", "main10", "main42210"]
+            let validProfiles = ["main", "main10", "main422", "main42210"]
             let rawProfile = cfg.profile?.lowercased()
             let validProf = rawProfile.flatMap { validProfiles.contains($0) ? $0 : nil }
+            let useX265 = useTwoPassEncoder || (validProf == "main422")
             
-            if useTwoPassEncoder {
+            if useX265 {
                 args += ["-c\(spec)", "libx265"]
                 switch validProf {
+                case "main422":
+                    args += ["-pix_fmt\(spec)", "yuv422p"]
                 case "main10":
                     args += ["-profile\(spec)", "main10", "-pix_fmt\(spec)", "yuv420p10le"]
                 case "main42210":
@@ -345,11 +388,19 @@ public actor RemuxEngine {
                 case "main":
                     args += ["-profile\(spec)", "main", "-pix_fmt\(spec)", "yuv420p"]
                 default:
-                    let sourceIs10Bit = track.pixelFormat?.lowercased().contains("10") == true
+                    let sourceIs10Bit = pfLower.contains("10")
                     args += ["-pix_fmt\(spec)", sourceIs10Bit ? "yuv420p10le" : "yuv420p"]
                 }
                 
-                args += ["-b\(spec)", resolvedMultiPassBitrate(for: track)]
+                if !cfg.allowFrameReordering {
+                    args += ["-bf\(spec)", "0"]
+                }
+                
+                if useTwoPassEncoder {
+                    args += ["-b\(spec)", resolvedMultiPassBitrate(for: track)]
+                } else if let br = normalizedBitrate(cfg.bitrate) {
+                    args += ["-b\(spec)", br]
+                }
                 
                 if let kf = cfg.keyFrameInterval, kf > 0 {
                     args += ["-g\(spec)", "\(kf)"]
@@ -365,17 +416,28 @@ public actor RemuxEngine {
                 }
             } else {
                 args += ["-c\(spec)", "hevc_videotoolbox"]
-                switch validProf {
-                case "main10":
-                    args += ["-profile\(spec)", "main10", "-pix_fmt\(spec)", "p010le"]
-                case "main42210":
-                    args += ["-profile\(spec)", "main42210", "-pix_fmt\(spec)", "p210le"]
-                case "main":
-                    args += ["-profile\(spec)", "main", "-pix_fmt\(spec)", "yuv420p"]
-                default:
-                    let sourceIs10Bit = track.pixelFormat?.lowercased().contains("10") == true
-                    args += ["-pix_fmt\(spec)", sourceIs10Bit ? "p010le" : "yuv420p"]
+                let alphaEligible = (validProf == nil || validProf == "main") && cfg.preserveAlpha && hasAlpha
+                
+                if alphaEligible {
+                    if validProf == "main" {
+                        args += ["-profile\(spec)", "main"]
+                    }
+                    args += ["-pix_fmt\(spec)", "bgra", "-alpha_quality\(spec)", "0.8"]
+                } else {
+                    switch validProf {
+                    case "main10":
+                        args += ["-profile\(spec)", "main10", "-pix_fmt\(spec)", "p010le"]
+                    case "main42210":
+                        args += ["-profile\(spec)", "main42210", "-pix_fmt\(spec)", "p210le"]
+                    case "main":
+                        args += ["-profile\(spec)", "main", "-pix_fmt\(spec)", "yuv420p"]
+                    default:
+                        let sourceIs10Bit = pfLower.contains("10")
+                        args += ["-pix_fmt\(spec)", sourceIs10Bit ? "p010le" : "yuv420p"]
+                    }
                 }
+                
+                args += ["-bf\(spec)", cfg.allowFrameReordering ? "2" : "0"]
                 
                 if let br = normalizedBitrate(cfg.bitrate) {
                     args += ["-b\(spec)", br]
@@ -385,6 +447,11 @@ public actor RemuxEngine {
                 }
             }
             
+            // HEVC enforces progressive frames cleanly
+            filterParts.append("yadif=0:-1:1")
+            setparamsParts.append("field_mode=prog")
+            args += ["-field_order\(spec)", "progressive"]
+            
             if isMP4Like && pass != 1 {
                 args += ["-tag\(spec)", "hvc1"]
             }
@@ -392,18 +459,32 @@ public actor RemuxEngine {
         case .transcodeProRes:
             let validProResProfiles = ["0", "1", "2", "3", "4", "5"]
             let profile = cfg.profile.flatMap { validProResProfiles.contains($0) ? $0 : nil } ?? "2"
-            let pfLower = track.pixelFormat?.lowercased() ?? ""
-            let hasAlpha = pfLower.contains("yuva") || pfLower.contains("rgba") || pfLower.contains("bgra") || pfLower.contains("argb") || pfLower.contains("abgr")
+            let canPreserveAlpha = (profile == "4" || profile == "5") && cfg.preserveAlpha && hasAlpha
             let pixFmt = (profile == "4" || profile == "5")
-                ? (hasAlpha ? "yuva444p10le" : "yuv444p10le")
+                ? (canPreserveAlpha ? "yuva444p10le" : "yuv444p10le")
                 : "yuv422p10le"
             args += ["-c\(spec)", "prores_ks", "-profile\(spec)", profile, "-pix_fmt\(spec)", pixFmt]
+            
+            switch cfg.fieldOrder {
+            case .topFirst:
+                args += ["-flags\(spec)", "+ilme+ildct", "-field_order\(spec)", "tt"]
+                setparamsParts.append("field_mode=tff")
+            case .bottomFirst:
+                args += ["-flags\(spec)", "+ilme+ildct", "-field_order\(spec)", "bb"]
+                setparamsParts.append("field_mode=bff")
+            case .progressive:
+                filterParts.append("yadif=0:-1:1")
+                setparamsParts.append("field_mode=prog")
+                args += ["-field_order\(spec)", "progressive"]
+            case .auto, .none:
+                break
+            }
             
         default:
             return ["-c\(spec)", "copy"]
         }
         
-        // Shared Video Transcode Properties (Frame Rate & Color Space)
+        // Shared Video Transcode Properties (Frame Rate & Color Space + Unified Filter Chain)
         if let fps = cfg.frameRate?.trimmingCharacters(in: .whitespacesAndNewlines),
            !fps.isEmpty,
            fps.lowercased() != "auto" {
@@ -415,12 +496,23 @@ public actor RemuxEngine {
            let p = cs.ffPrimaries,
            let t = cs.ffTransfer,
            let m = cs.ffMatrix {
+            setparamsParts += [
+                "color_primaries=\(p)",
+                "color_trc=\(t)",
+                "colorspace=\(m)"
+            ]
             args += [
-                "-filter\(spec)", "setparams=color_primaries=\(p):color_trc=\(t):colorspace=\(m)",
                 "-color_primaries\(spec)", p,
                 "-color_trc\(spec)", t,
                 "-colorspace\(spec)", m
             ]
+        }
+        
+        if !setparamsParts.isEmpty {
+            filterParts.append("setparams=" + setparamsParts.joined(separator: ":"))
+        }
+        if !filterParts.isEmpty {
+            args += ["-filter\(spec)", filterParts.joined(separator: ",")]
         }
         
         return args
