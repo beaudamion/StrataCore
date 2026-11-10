@@ -1,6 +1,6 @@
 import Foundation
 
-public struct MediaChapter: Identifiable, Hashable, Codable {
+public struct MediaChapter: Identifiable, Hashable, Codable, Sendable {
     public let id: Int
     public let startTime: Double
     public let endTime: Double
@@ -11,5 +11,13 @@ public struct MediaChapter: Identifiable, Hashable, Codable {
         self.startTime = startTime
         self.endTime = endTime
         self.title = title
+    }
+    
+    public var formattedStartTime: String {
+        MediaFormatters.formatDuration(startTime)
+    }
+    
+    public var formattedEndTime: String {
+        MediaFormatters.formatDuration(endTime)
     }
 }
