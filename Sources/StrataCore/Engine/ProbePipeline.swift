@@ -190,20 +190,36 @@ public final class ProbePipeline {
         
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
+        process.standardInput = FileHandle.nullDevice
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
+        
+        let (terminationStream, terminationContinuation) = AsyncStream<Int32>.makeStream()
+        process.terminationHandler = { terminatedProcess in
+            terminatedProcess.terminationHandler = nil
+            terminationContinuation.yield(terminatedProcess.terminationStatus)
+            terminationContinuation.finish()
+        }
         
         do {
             try process.run()
         } catch {
+            process.terminationHandler = nil
+            terminationContinuation.finish()
             throw ProbeError.executionFailed(error.localizedDescription)
         }
         
         let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        let errData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        var exitStatus: Int32?
+        for await status in terminationStream {
+            exitStatus = status
+            break
+        }
+        process.terminationHandler = nil
+        let finalStatus = exitStatus ?? (process.isRunning ? -1 : process.terminationStatus)
         
-        if process.terminationStatus != 0 {
-            let errData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        if finalStatus != 0 {
             let rawStderr = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let ext = fileURL.pathExtension.lowercased()
             
@@ -333,11 +349,21 @@ public final class ProbePipeline {
             process.executableURL = URL(fileURLWithPath: ffprobePath)
             process.arguments = ["-v", "quiet", "-print_format", "json", "-show_streams", fileURL.path]
             let stdoutPipe = Pipe()
+            process.standardInput = FileHandle.nullDevice
             process.standardOutput = stdoutPipe
+            process.standardError = FileHandle.nullDevice
+            
+            let (terminationStream, terminationContinuation) = AsyncStream<Int32>.makeStream()
+            process.terminationHandler = { terminatedProcess in
+                terminatedProcess.terminationHandler = nil
+                terminationContinuation.yield(terminatedProcess.terminationStatus)
+                terminationContinuation.finish()
+            }
             
             if (try? process.run()) != nil {
                 let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-                process.waitUntilExit()
+                for await _ in terminationStream { break }
+                process.terminationHandler = nil
                 if let output = try? JSONDecoder().decode(FFprobeOutput.self, from: data),
                    let stream = output.streams?.first {
                     let lang = stream.tags?["language"] ?? "und"

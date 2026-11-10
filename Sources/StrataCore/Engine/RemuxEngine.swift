@@ -610,14 +610,24 @@ public actor RemuxEngine {
         process.arguments = arguments
         
         let stderrPipe = Pipe()
-        process.standardOutput = Pipe() // discard stdout
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
         process.standardError = stderrPipe
+        
+        let (terminationStream, terminationContinuation) = AsyncStream<Int32>.makeStream()
+        process.terminationHandler = { terminatedProcess in
+            terminatedProcess.terminationHandler = nil
+            terminationContinuation.yield(terminatedProcess.terminationStatus)
+            terminationContinuation.finish()
+        }
         
         self.activeProcess = process
         
         do {
             try process.run()
         } catch {
+            process.terminationHandler = nil
+            terminationContinuation.finish()
             self.activeProcess = nil
             return -1
         }
@@ -657,9 +667,34 @@ public actor RemuxEngine {
             // Stream read terminated
         }
         
-        process.waitUntilExit()
+        // Flush any trailing line buffered before EOF
+        if !self.isCancelled && !lineBuffer.isEmpty {
+            if let line = String(data: lineBuffer, encoding: .utf8),
+               let update = MediaFormatters.parseFFmpegProgress(line: line, totalDuration: duration) {
+                let scaledProgress = min(1.0, max(0.0, progressOffset + (update.progress * progressScale)))
+                let speedLabel = speedPrefix.map { "\($0) • \(update.speed)" } ?? update.speed
+                continuation.yield(RemuxProgress(
+                    progress: scaledProgress,
+                    currentTime: update.currentTime,
+                    totalTime: update.totalTime,
+                    fps: update.fps,
+                    speed: speedLabel,
+                    bitrate: update.bitrate,
+                    frame: update.frame,
+                    remainingSeconds: update.remainingSeconds
+                ))
+            }
+        }
+        
+        var exitStatus: Int32?
+        for await status in terminationStream {
+            exitStatus = status
+            break
+        }
+        process.terminationHandler = nil
+        let finalStatus = exitStatus ?? (process.isRunning ? -1 : process.terminationStatus)
         self.activeProcess = nil
-        return process.terminationStatus
+        return finalStatus
     }
     
     /// Executes the remux job and yields progress updates asynchronously.
