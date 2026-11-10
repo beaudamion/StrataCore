@@ -393,38 +393,57 @@ struct StrataCoreTests {
         #expect(TrackAction.transcodeProRes.supportsVideoConfig == true)
         #expect(TrackAction.copy.supportsVideoConfig == false)
         
-        // 2. Sanitization across codec switches & baseline CABAC guard
+        // 2. Defaults ("auto" for H.264/HEVC click-and-go; "2" Standard for ProRes) & Sanitization
         var config = VideoEncodingConfig.default(for: .transcodeH264_VT)
-        #expect(config.profile == "high")
-        #expect(config.entropyMode == .cabac)
+        #expect(config.profile == "auto")
+        #expect(config.entropyMode == .auto)
+        #expect(config.fieldOrder == nil)
+        #expect(config.allowFrameReordering == true)
+        #expect(config.preserveAlpha == false)
         config.frameRate = "24"
         config.colorSpace = .rec709
         config.profile = "baseline"
+        config.entropyMode = .cabac
         config.sanitize(for: .transcodeH264_VT)
         #expect(config.entropyMode == .cavlc)
         
-        // Switching to HEVC preserves frameRate & colorSpace while updating profile & clearing entropyMode
+        // Switching to HEVC preserves frameRate & colorSpace while resetting to HEVC defaults
         config.sanitize(for: .transcodeHEVC_VT)
-        #expect(config.profile == "main")
+        #expect(config.profile == "auto")
         #expect(config.entropyMode == nil)
         #expect(config.frameRate == "24")
         #expect(config.colorSpace == .rec709)
+        
+        // HEVC alpha disabled for 10-bit or multi-pass or 4:2:2
+        config.profile = "main"
+        config.preserveAlpha = true
+        config.sanitize(for: .transcodeHEVC_VT)
+        #expect(config.preserveAlpha == true)
+        config.profile = "main422"
+        config.sanitize(for: .transcodeHEVC_VT)
+        #expect(config.preserveAlpha == false)
         
         // Switching to ProRes sets Standard (2) and resets bitrate/multipass/keyFrameInterval
         config.bitrate = "15000k"
         config.keyFrameInterval = 48
         config.multiPass = true
+        config.fieldOrder = .topFirst
         config.sanitize(for: .transcodeProRes)
         #expect(config.profile == "2")
         #expect(config.bitrate == "auto")
         #expect(config.keyFrameInterval == nil)
         #expect(config.multiPass == false)
+        #expect(config.preserveAlpha == false)
+        
+        // Switching from ProRes Top First to HEVC clears incompatible interlaced fieldOrder
+        config.sanitize(for: .transcodeHEVC_VT)
+        #expect(config.fieldOrder == nil)
         
         let sourceURL = URL(fileURLWithPath: "/tmp/source.mkv")
         let mp4Out = URL(fileURLWithPath: "/tmp/out.mp4")
         let movOut = URL(fileURLWithPath: "/tmp/out.mov")
         
-        // 3. H.264 Hardware Single-Pass Command Construction
+        // 3. H.264 Hardware Single-Pass Command Construction (Frame Reordering ON vs OFF)
         let h264Track = MediaTrack(
             streamIndex: 0,
             mediaType: .video,
@@ -440,6 +459,7 @@ struct StrataCoreTests {
                 profile: "high",
                 entropyMode: .cabac,
                 keyFrameInterval: 48,
+                allowFrameReordering: true,
                 multiPass: false
             )
         )
@@ -452,6 +472,8 @@ struct StrataCoreTests {
         #expect(h264Args.contains("high"))
         #expect(h264Args.contains("-coder:v:0"))
         #expect(h264Args.contains("cabac"))
+        #expect(h264Args.contains("-bf:v:0"))
+        #expect(h264Args.contains("2"))
         #expect(h264Args.contains("-b:v:0"))
         #expect(h264Args.contains("15000k"))
         #expect(h264Args.contains("-g:v:0"))
@@ -460,8 +482,9 @@ struct StrataCoreTests {
         #expect(h264Args.contains("24000/1001"))
         #expect(h264Args.contains("-color_primaries:v:0"))
         #expect(h264Args.contains("bt709"))
+        #expect(h264Args.contains { $0.contains("yadif=0:-1:1,setparams=field_mode=prog:color_primaries=bt709") })
         
-        // 4. HEVC 10-bit 4:2:0 Hardware Command Construction (must include p010le + hvc1)
+        // 4. HEVC 10-bit 4:2:0, HEVC 8-bit 4:2:2 (x265), & HEVC Alpha (bgra)
         let hevc10Track = MediaTrack(
             streamIndex: 0,
             mediaType: .video,
@@ -475,6 +498,7 @@ struct StrataCoreTests {
                 colorSpace: .rec2020HLG,
                 profile: "main10",
                 keyFrameInterval: 60,
+                allowFrameReordering: false,
                 multiPass: false
             )
         )
@@ -487,27 +511,75 @@ struct StrataCoreTests {
         #expect(hevcArgs.contains("p010le"))
         #expect(hevcArgs.contains("hvc1"))
         #expect(hevcArgs.contains("arib-std-b67"))
-        #expect(!hevcArgs.contains("-b:v:0")) // "auto" omits -b:v in 1-pass VT
+        #expect(hevcArgs.contains("-bf:v:0"))
+        #expect(hevcArgs.contains("0"))
+        #expect(!hevcArgs.contains("-b:v:0"))
         
-        // 5. ProRes 4444 vs 422 HQ
-        let proRes4444Track = MediaTrack(
+        let hevc422_8Track = MediaTrack(
             streamIndex: 0,
             mediaType: .video,
             codecName: "h264",
             pixelFormat: "yuv420p",
             isSelected: true,
-            action: .transcodeProRes,
-            videoConfig: VideoEncodingConfig(frameRate: "25", colorSpace: .rec709, profile: "4")
+            action: .transcodeHEVC_VT,
+            videoConfig: VideoEncodingConfig(profile: "main422", allowFrameReordering: false)
         )
-        let proResArgs = try RemuxEngine.buildArguments(
-            for: MediaFile(url: sourceURL, filename: "source.mkv", fileSize: 10_000, containerFormat: "matroska", duration: 10, tracks: [proRes4444Track]),
+        let hevc422_8Args = try RemuxEngine.buildArguments(
+            for: MediaFile(url: sourceURL, filename: "source.mkv", fileSize: 10_000, containerFormat: "matroska", duration: 10, tracks: [hevc422_8Track]),
+            options: RemuxOptions(targetContainer: .mp4, outputURL: mp4Out)
+        )
+        #expect(hevc422_8Args.contains("libx265"))
+        #expect(hevc422_8Args.contains("yuv422p"))
+        #expect(!hevc422_8Args.contains("-profile:v:0"))
+        
+        let hevcAlphaTrack = MediaTrack(
+            streamIndex: 0,
+            mediaType: .video,
+            codecName: "prores",
+            pixelFormat: "yuva444p10le",
+            isSelected: true,
+            action: .transcodeHEVC_VT,
+            videoConfig: VideoEncodingConfig(profile: "auto", preserveAlpha: true)
+        )
+        let hevcAlphaArgs = try RemuxEngine.buildArguments(
+            for: MediaFile(url: sourceURL, filename: "source.mkv", fileSize: 10_000, containerFormat: "matroska", duration: 10, tracks: [hevcAlphaTrack]),
             options: RemuxOptions(targetContainer: .mov, outputURL: movOut)
         )
-        #expect(proResArgs.contains("prores_ks"))
-        #expect(proResArgs.contains("4"))
-        #expect(proResArgs.contains("yuv444p10le"))
+        #expect(hevcAlphaArgs.contains("bgra"))
+        #expect(hevcAlphaArgs.contains("-alpha_quality:v:0"))
         
-        // 6. Multi-Pass Command Construction (Pass 1 & Pass 2 for H.264 & HEVC with Auto Bitrate Fallback)
+        // 5. ProRes 4444 Preserve Alpha vs Strip Alpha & Interlaced Field Order
+        let proResAlphaKeep = MediaTrack(
+            streamIndex: 0,
+            mediaType: .video,
+            codecName: "prores",
+            pixelFormat: "yuva444p10le",
+            isSelected: true,
+            action: .transcodeProRes,
+            videoConfig: VideoEncodingConfig(frameRate: "25", fieldOrder: .topFirst, colorSpace: .rec709, profile: "4", preserveAlpha: true)
+        )
+        let proResKeepArgs = try RemuxEngine.buildArguments(
+            for: MediaFile(url: sourceURL, filename: "source.mkv", fileSize: 10_000, containerFormat: "matroska", duration: 10, tracks: [proResAlphaKeep]),
+            options: RemuxOptions(targetContainer: .mov, outputURL: movOut)
+        )
+        #expect(proResKeepArgs.contains("prores_ks"))
+        #expect(proResKeepArgs.contains("yuva444p10le"))
+        #expect(proResKeepArgs.contains("+ilme+ildct"))
+        #expect(proResKeepArgs.contains("tt"))
+        #expect(proResKeepArgs.contains { $0.contains("field_mode=tff") })
+        
+        var proResStripAlpha = proResAlphaKeep
+        proResStripAlpha.videoConfig.preserveAlpha = false
+        proResStripAlpha.videoConfig.fieldOrder = .progressive
+        let proResStripArgs = try RemuxEngine.buildArguments(
+            for: MediaFile(url: sourceURL, filename: "source.mkv", fileSize: 10_000, containerFormat: "matroska", duration: 10, tracks: [proResStripAlpha]),
+            options: RemuxOptions(targetContainer: .mov, outputURL: movOut)
+        )
+        #expect(proResStripArgs.contains("yuv444p10le"))
+        #expect(proResStripArgs.contains("progressive"))
+        #expect(proResStripArgs.contains { $0.contains("yadif=0:-1:1,setparams=field_mode=prog") })
+        
+        // 6. Multi-Pass Command Construction (Pass 1 & Pass 2 for H.264 Interlaced & HEVC)
         var mpTrack = MediaTrack(
             streamIndex: 0,
             mediaType: .video,
@@ -516,7 +588,7 @@ struct StrataCoreTests {
             height: 1080,
             isSelected: true,
             action: .transcodeH264_VT,
-            videoConfig: VideoEncodingConfig(bitrate: "auto", profile: "high", entropyMode: .cabac, multiPass: true)
+            videoConfig: VideoEncodingConfig(bitrate: "auto", fieldOrder: .bottomFirst, profile: "high", entropyMode: .cabac, multiPass: true)
         )
         let logDir = URL(fileURLWithPath: "/tmp/strata_pass_unit")
         let pass1 = try RemuxEngine.buildArguments(
@@ -528,12 +600,14 @@ struct StrataCoreTests {
         #expect(pass1.contains("libx264"))
         #expect(pass1.contains("-pass:v:0"))
         #expect(pass1.contains("1"))
-        #expect(pass1.contains("-b:v:0")) // auto fallback bitrate populated for 2-pass!
+        #expect(pass1.contains("-b:v:0"))
         #expect(pass1.contains("8000k"))
+        #expect(pass1.contains("bff=1"))
         #expect(pass1.contains("null"))
         
         mpTrack.action = .transcodeHEVC_VT
         mpTrack.videoConfig.profile = "main10"
+        mpTrack.videoConfig.fieldOrder = nil
         let hevcPass2 = try RemuxEngine.buildArguments(
             for: MediaFile(url: sourceURL, filename: "source.mkv", fileSize: 10_000, containerFormat: "matroska", duration: 10, tracks: [mpTrack]),
             options: RemuxOptions(targetContainer: .mp4, outputURL: mp4Out),
