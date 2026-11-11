@@ -14,7 +14,7 @@ public enum SegmentedEncodingMode: String, Codable, CaseIterable, Identifiable, 
     
     public var displayName: String {
         switch self {
-        case .auto: return "Auto (Open Hardware Engines)"
+        case .auto: return "Auto (Open Engines)"
         case .two: return "Manual: 2 Segments"
         case .three: return "Manual: 3 Segments"
         case .four: return "Manual: 4 Segments"
