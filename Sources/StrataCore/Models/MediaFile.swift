@@ -183,40 +183,69 @@ public struct MediaFile: Identifiable, Hashable, Codable, Sendable {
     
     public var technicalSummaryText: String {
         var lines: [String] = []
-        lines.append("File: \(filename)")
-        lines.append("Path: \(url.path)")
-        let containerDesc = containerLongName.isEmpty ? cleanFormatName : "\(containerLongName) (\(cleanFormatName))"
-        lines.append("Container: \(containerDesc)")
-        lines.append("Size: \(exactByteSizeFormatted)")
-        lines.append("Duration: \(preciseDuration)")
+        let fmtDisplay = containerLongName.isEmpty ? cleanFormatName : containerLongName
+        lines.append("Container & File:")
+        lines.append("  File: \(filename)")
+        lines.append("  Path: \(url.path)")
+        lines.append("  Folder: \(url.deletingLastPathComponent().path)")
+        lines.append("  Format: \(fmtDisplay)")
+        lines.append("  Exact Duration: \(preciseDuration)")
+        lines.append("  File Size: \(exactByteSizeFormatted)")
         if overallBitRate > 0 {
-            lines.append("Overall Bit Rate: \(formattedBitRate)")
+            lines.append("  Overall Bit Rate: \(formattedBitRate)")
+        }
+        lines.append("  Total Streams: \(tracks.count)")
+        if abs(startTime) > 0.001 {
+            lines.append("  Start Offset: \(String(format: "%.3f s", startTime))")
         }
         if let dr = dynamicRangeLabel {
-            lines.append("Dynamic Range: \(dr)")
+            lines.append("  Dynamic Range: \(dr)")
         }
         if let app = writingApplication {
-            lines.append("Writing App: \(app)")
+            lines.append("  Writing App: \(app)")
         }
         if let created = creationDateDisplay {
-            lines.append("Created: \(created)")
+            lines.append("  Created: \(created)")
         }
-        
+
+        let numberFormatter = NumberFormatter()
+        numberFormatter.numberStyle = .decimal
+
         for tr in tracks {
             lines.append("")
             lines.append("Stream #0:\(tr.streamIndex) (\(tr.mediaType.displayName)):")
+            if tr.mediaType == .audio || tr.mediaType == .subtitle ||
+                tr.mediaType == .attachment || tr.mediaType == .data || tr.mediaType == .other ||
+                (!tr.language.isEmpty && tr.language.lowercased() != "und") {
+                lines.append("  Language: \(LanguageDirectory.displayName(for: tr.language))")
+            }
+            if !tr.title.isEmpty {
+                lines.append("  Title: \(tr.title)")
+            }
+
             var codecParts = [tr.codecName.uppercased()]
             if let prof = tr.profile, !prof.isEmpty { codecParts.append(prof) }
             if let lvl = tr.codecLevelDisplay { codecParts.append("L\(lvl)") }
             if let tag = tr.codecTag { codecParts.append("[\(tag)]") }
             lines.append("  Codec: \(codecParts.joined(separator: " • "))")
+
+            if let long = tr.codecLongName, !long.isEmpty {
+                lines.append("  Standard: \(long)")
+            }
             if let w = tr.width, let h = tr.height {
-                var dim = "\(w)x\(h)"
-                if let dar = tr.displayAspectRatio { dim += " (\(dar))" }
-                lines.append("  Dimensions: \(dim)")
+                lines.append("  Dimensions: \(w) × \(h)")
+            }
+            if tr.displayAspectRatio != nil || tr.sampleAspectRatio != nil {
+                var arParts: [String] = []
+                if let dar = tr.displayAspectRatio { arParts.append("\(dar) (Display)") }
+                if let sar = tr.sampleAspectRatio {
+                    arParts.append(sar == "1:1" ? "1:1 Square" : "\(sar) PAR")
+                }
+                lines.append("  Aspect Ratio: \(arParts.joined(separator: " • "))")
             }
             if let fps = tr.frameRate {
-                lines.append("  Frame Rate: \(fps)")
+                let vfrTag = (tr.isVariableFrameRate == true) ? " (VFR)" : (tr.isVariableFrameRate == false ? " (CFR)" : "")
+                lines.append("  Frame Rate: \(fps)\(vfrTag)")
             }
             if let fo = tr.formattedFieldOrder {
                 lines.append("  Field Order: \(fo)")
@@ -224,9 +253,25 @@ public struct MediaFile: Identifiable, Hashable, Codable, Sendable {
             if let cs = tr.formattedColorSpec {
                 lines.append("  Color Space: \(cs)")
             }
-            if let chroma = tr.chromaSubsamplingDisplay {
-                let depthStr = tr.bitDepth.map { "\($0)-bit " } ?? ""
-                lines.append("  Pixel Format: \(depthStr)\(chroma)")
+            if let cr = tr.formattedColorRange {
+                lines.append("  Color Range: \(cr)")
+            }
+            if tr.chromaSubsamplingDisplay != nil || tr.bitDepth != nil || tr.pixelFormat != nil {
+                var pxParts: [String] = []
+                if let bd = tr.bitDepth { pxParts.append("\(bd)-bit") }
+                if let chroma = tr.chromaSubsamplingDisplay { pxParts.append(chroma) }
+                if let pf = tr.pixelFormat { pxParts.append(pf) }
+                lines.append("  Pixel Format: \(pxParts.joined(separator: " • "))")
+            }
+            if let cl = tr.chromaLocation, !cl.isEmpty {
+                lines.append("  Chroma Loc.: \(cl.capitalized)")
+            }
+            if let bf = tr.hasBFrames {
+                lines.append("  B-Frames: \(bf > 0 ? "\(bf) reorder" : "None (0)")")
+            }
+            if let fc = tr.frameCount, fc > 0 {
+                let grouped = numberFormatter.string(from: NSNumber(value: fc)) ?? "\(fc)"
+                lines.append("  Frame Count: \(grouped)")
             }
             if let ch = tr.channelDisplay {
                 lines.append("  Channels: \(ch)")
@@ -234,14 +279,36 @@ public struct MediaFile: Identifiable, Hashable, Codable, Sendable {
             if let sr = tr.formattedSampleRateDisplay {
                 lines.append("  Sample Rate: \(sr)")
             }
+            if let sf = tr.formattedSampleFormat {
+                lines.append("  Sample Format: \(sf)")
+            }
             if let br = tr.formattedBitRate {
-                lines.append("  Bit Rate: \(br)")
+                let label = tr.mediaType == .video ? "Stream Bit Rate" : "Bit Rate"
+                lines.append("  \(label): \(br)")
+            }
+            if let tc = tr.startTimecode {
+                lines.append("  Timecode: \(tc)")
             }
             if let enc = tr.encoderName {
                 lines.append("  Encoder: \(enc)")
             }
+            if !tr.dispositionFlags.isEmpty {
+                lines.append("  Flags: \(tr.dispositionFlags.joined(separator: ", "))")
+            }
+            if tr.isExternal, let extURL = tr.externalURL {
+                lines.append("  External Source: \(extURL.path)")
+            }
         }
-        
+
+        let tagsList = sortedTags
+        if !tagsList.isEmpty {
+            lines.append("")
+            lines.append("Metadata Tags (\(tagsList.count)):")
+            for item in tagsList {
+                lines.append("  \(item.key): \(item.value)")
+            }
+        }
+
         if !chapters.isEmpty {
             lines.append("")
             lines.append("Chapters (\(chapters.count)):")
@@ -249,7 +316,7 @@ public struct MediaFile: Identifiable, Hashable, Codable, Sendable {
                 lines.append("  [\(ch.formattedStartTime)] \(ch.title)")
             }
         }
-        
+
         return lines.joined(separator: "\n")
     }
 }

@@ -700,6 +700,16 @@ struct StrataCoreTests {
         #expect(audioTrack.formattedSampleFormat == "32-bit Float")
         #expect(audioTrack.formattedBitRate == "384 kbps")
         
+        let subtitleTrack = MediaTrack(
+            streamIndex: 2,
+            mediaType: .subtitle,
+            codecName: "subrip",
+            language: "eng",
+            title: "English SDH",
+            isForced: true,
+            dispositionFlags: ["Default", "Forced"]
+        )
+        
         let media = MediaFile(
             url: URL(fileURLWithPath: "/tmp/Master_Feature.mov"),
             filename: "Master_Feature.mov",
@@ -707,9 +717,14 @@ struct StrataCoreTests {
             containerFormat: "mov,mp4,m4a,3gp,3g2,mj2",
             containerLongName: "QuickTime / MOV",
             duration: 3661.25,
+            startTime: 0.125,
             overallBitRate: 19_200_000,
-            tags: ["writing_application": "StrataMux 1.0", "creation_time": "2026-11-09T12:30:00Z"],
-            tracks: [hevcHDRVideo, audioTrack],
+            tags: [
+                "writing_application": "StrataMux 1.0",
+                "creation_time": "2026-11-09T12:30:00Z",
+                "title": "Master Feature"
+            ],
+            tracks: [hevcHDRVideo, audioTrack, subtitleTrack],
             chapters: [MediaChapter(id: 0, startTime: 0, endTime: 1200, title: "Act I")]
         )
         
@@ -717,10 +732,31 @@ struct StrataCoreTests {
         #expect(media.dynamicRangeLabel == "HDR10 (PQ)")
         #expect(media.writingApplication == "StrataMux 1.0")
         #expect(media.creationDateDisplay != nil)
-        #expect(media.technicalSummaryText.contains("Master_Feature.mov"))
-        #expect(media.technicalSummaryText.contains("QuickTime / MOV"))
-        #expect(media.technicalSummaryText.contains("Rec. 2020 PQ / HDR10"))
-        #expect(media.technicalSummaryText.contains("Chapters (1)"))
-        #expect(media.technicalSummaryText.contains("Act I"))
+        let summary = media.technicalSummaryText
+        #expect(summary.contains("Container & File:"))
+        #expect(summary.contains("Master_Feature.mov"))
+        #expect(summary.contains("QuickTime / MOV"))
+        #expect(summary.contains("Total Streams: 3"))
+        #expect(summary.contains("Start Offset: 0.125 s"))
+        #expect(summary.contains("3840 × 2160"))
+        #expect(summary.contains("Aspect Ratio: 16:9 (Display) • 1:1 Square"))
+        #expect(summary.contains("Frame Rate: 23.98 fps (CFR)"))
+        #expect(summary.contains("Rec. 2020 PQ / HDR10"))
+        #expect(summary.contains("Color Range: Limited (16–235)"))
+        #expect(summary.contains("Pixel Format: 10-bit • 4:2:0 • yuv420p10le"))
+        #expect(summary.contains("Chroma Loc.: Topleft"))
+        #expect(summary.contains("B-Frames: 2 reorder"))
+        #expect(summary.contains("Frame Count: 144,000"))
+        #expect(summary.contains("Stream Bit Rate: 18.5 Mbps"))
+        #expect(summary.contains("Timecode: 01:00:00:00"))
+        #expect(summary.contains("Flags: Default"))
+        #expect(summary.contains("Language: English"))
+        #expect(summary.contains("Sample Format: 32-bit Float"))
+        #expect(summary.contains("Title: English SDH"))
+        #expect(summary.contains("Flags: Default, Forced"))
+        #expect(summary.contains("Metadata Tags (3):"))
+        #expect(summary.contains("title: Master Feature"))
+        #expect(summary.contains("Chapters (1)"))
+        #expect(summary.contains("Act I"))
     }
 }
