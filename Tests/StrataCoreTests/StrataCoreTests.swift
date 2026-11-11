@@ -548,7 +548,7 @@ struct StrataCoreTests {
         #expect(hevcAlphaArgs.contains("bgra"))
         #expect(hevcAlphaArgs.contains("-alpha_quality:v:0"))
         
-        // 5. ProRes 4444 Preserve Alpha vs Strip Alpha & Interlaced Field Order
+        // 5. Hardware-Accelerated Video Decoding (-hwaccel videotoolbox) & ProRes 4444/422 Hardware Encoding
         let proResAlphaKeep = MediaTrack(
             streamIndex: 0,
             mediaType: .video,
@@ -562,8 +562,10 @@ struct StrataCoreTests {
             for: MediaFile(url: sourceURL, filename: "source.mkv", fileSize: 10_000, containerFormat: "matroska", duration: 10, tracks: [proResAlphaKeep]),
             options: RemuxOptions(targetContainer: .mov, outputURL: movOut)
         )
-        #expect(proResKeepArgs.contains("prores_ks"))
-        #expect(proResKeepArgs.contains("yuva444p10le"))
+        #expect(proResKeepArgs.prefix(5) == ["-y", "-hide_banner", "-hwaccel", "videotoolbox", "-i"])
+        #expect(proResKeepArgs.contains("prores_videotoolbox"))
+        #expect(proResKeepArgs.contains("-allow_sw:v:0"))
+        #expect(proResKeepArgs.contains("ayuv64le"))
         #expect(proResKeepArgs.contains("+ilme+ildct"))
         #expect(proResKeepArgs.contains("tt"))
         #expect(proResKeepArgs.contains { $0.contains("field_mode=tff") })
@@ -575,9 +577,82 @@ struct StrataCoreTests {
             for: MediaFile(url: sourceURL, filename: "source.mkv", fileSize: 10_000, containerFormat: "matroska", duration: 10, tracks: [proResStripAlpha]),
             options: RemuxOptions(targetContainer: .mov, outputURL: movOut)
         )
-        #expect(proResStripArgs.contains("yuv444p10le"))
+        #expect(proResStripArgs.contains("prores_videotoolbox"))
+        #expect(proResStripArgs.contains("p410le"))
         #expect(proResStripArgs.contains("progressive"))
         #expect(proResStripArgs.contains { $0.contains("yadif=0:-1:1,setparams=field_mode=prog") })
+        
+        var proRes422HQ = proResAlphaKeep
+        proRes422HQ.videoConfig.profile = "3"
+        proRes422HQ.videoConfig.preserveAlpha = true
+        let proRes422Args = try RemuxEngine.buildArguments(
+            for: MediaFile(url: sourceURL, filename: "source.mkv", fileSize: 10_000, containerFormat: "matroska", duration: 10, tracks: [proRes422HQ]),
+            options: RemuxOptions(targetContainer: .mov, outputURL: movOut)
+        )
+        #expect(proRes422Args.contains("prores_videotoolbox"))
+        #expect(proRes422Args.contains("p210le"))
+        
+        // Software fallback when useHardwareAcceleration == false
+        let proResSWArgs = try RemuxEngine.buildArguments(
+            for: MediaFile(url: sourceURL, filename: "source.mkv", fileSize: 10_000, containerFormat: "matroska", duration: 10, tracks: [proResAlphaKeep]),
+            options: RemuxOptions(targetContainer: .mov, outputURL: movOut, useHardwareAcceleration: false)
+        )
+        #expect(!proResSWArgs.contains("-hwaccel"))
+        #expect(proResSWArgs.contains("prores_ks"))
+        #expect(proResSWArgs.contains("yuva444p10le"))
+        
+        // Passthrough video (even with audio transcode) omits -hwaccel videotoolbox
+        let copyVideoTrack = MediaTrack(streamIndex: 0, mediaType: .video, codecName: "h264", isSelected: true, action: .copy)
+        let transcodeAudioTrack = MediaTrack(streamIndex: 1, mediaType: .audio, codecName: "ac3", isSelected: true, action: .transcodeAAC_Stereo)
+        let passthroughVideoArgs = try RemuxEngine.buildArguments(
+            for: MediaFile(url: sourceURL, filename: "source.mkv", fileSize: 10_000, containerFormat: "matroska", duration: 10, tracks: [copyVideoTrack, transcodeAudioTrack]),
+            options: RemuxOptions(targetContainer: .mp4, outputURL: mp4Out)
+        )
+        #expect(!passthroughVideoArgs.contains("-hwaccel"))
+        
+        // External video transcoding adds -hwaccel videotoolbox specifically before that external input
+        let extVideoURL = URL(fileURLWithPath: "/tmp/ext_video.mov")
+        let extSubURL = URL(fileURLWithPath: "/tmp/ext_sub.srt")
+        let extTranscodeVideo = MediaTrack(
+            streamIndex: 0,
+            mediaType: .video,
+            codecName: "prores",
+            isSelected: true,
+            action: .transcodeH264_VT,
+            isExternal: true,
+            externalURL: extVideoURL
+        )
+        let extSub = MediaTrack(
+            streamIndex: 0,
+            mediaType: .subtitle,
+            codecName: "subrip",
+            isSelected: true,
+            action: .copy,
+            isExternal: true,
+            externalURL: extSubURL
+        )
+        let multiInputArgs = try RemuxEngine.buildArguments(
+            for: MediaFile(url: sourceURL, filename: "source.mkv", fileSize: 10_000, containerFormat: "matroska", duration: 10, tracks: [transcodeAudioTrack, extTranscodeVideo, extSub]),
+            options: RemuxOptions(targetContainer: .mp4, outputURL: mp4Out)
+        )
+        let hwAccelIndices = multiInputArgs.enumerated().compactMap { $0.element == "-hwaccel" ? $0.offset : nil }
+        #expect(hwAccelIndices.count == 1)
+        if let idx = hwAccelIndices.first {
+            #expect(multiInputArgs[idx + 1] == "videotoolbox")
+            #expect(multiInputArgs[idx + 2] == "-i")
+            #expect(multiInputArgs[idx + 3] == extVideoURL.path)
+        }
+        
+        // Extraction arguments use HW decode + prores_videotoolbox when transcoding, omit -hwaccel for copy
+        let sourceMedia = MediaFile(url: sourceURL, filename: "source.mkv", fileSize: 10_000, containerFormat: "matroska", duration: 10, tracks: [proResAlphaKeep, copyVideoTrack])
+        let extractProResArgs = RemuxEngine.buildTrackExtractionArguments(file: sourceMedia, track: proResAlphaKeep, outputURL: movOut)
+        #expect(extractProResArgs.prefix(5) == ["-y", "-hide_banner", "-hwaccel", "videotoolbox", "-i"])
+        #expect(extractProResArgs.contains("prores_videotoolbox"))
+        let extractCopyArgs = RemuxEngine.buildTrackExtractionArguments(file: sourceMedia, track: copyVideoTrack, outputURL: mp4Out)
+        #expect(!extractCopyArgs.contains("-hwaccel"))
+        let extractSWArgs = RemuxEngine.buildTrackExtractionArguments(file: sourceMedia, track: proResAlphaKeep, outputURL: movOut, useHardwareAcceleration: false)
+        #expect(!extractSWArgs.contains("-hwaccel"))
+        #expect(extractSWArgs.contains("prores_ks"))
         
         // 6. Multi-Pass Command Construction (Pass 1 & Pass 2 for H.264 Interlaced & HEVC)
         var mpTrack = MediaTrack(
