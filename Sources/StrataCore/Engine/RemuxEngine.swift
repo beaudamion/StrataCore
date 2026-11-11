@@ -43,10 +43,16 @@ public actor RemuxEngine {
         
         var args: [String] = ["-y", "-hide_banner"]
         
-        // Input 0: Primary source file
+        // Input 0: Primary source file (enable VideoToolbox hardware decode when transcoding primary video)
+        let primaryNeedsHWDecode = options.useHardwareAcceleration && activeTracks.contains {
+            !$0.isExternal && $0.mediaType == .video && $0.action != .copy
+        }
+        if primaryNeedsHWDecode {
+            args += ["-hwaccel", "videotoolbox"]
+        }
         args += ["-i", file.url.path]
         
-        // Extra inputs: External subtitle or audio files
+        // Extra inputs: External subtitle, audio, or video files
         var externalInputMap: [URL: Int] = [:]
         var nextInputIndex = 1
         
@@ -55,6 +61,12 @@ public actor RemuxEngine {
                 if externalInputMap[extURL] == nil {
                     externalInputMap[extURL] = nextInputIndex
                     nextInputIndex += 1
+                    let externalNeedsHWDecode = options.useHardwareAcceleration && activeTracks.contains {
+                        $0.isExternal && $0.externalURL == extURL && $0.mediaType == .video && $0.action != .copy
+                    }
+                    if externalNeedsHWDecode {
+                        args += ["-hwaccel", "videotoolbox"]
+                    }
                     args += ["-i", extURL.path]
                 }
             }
@@ -85,7 +97,8 @@ public actor RemuxEngine {
                     streamSpecifier: ":v:\(videoOutIdx)",
                     isMP4Like: isMP4Like,
                     pass: pass,
-                    passLogBaseURL: passLogBaseURL
+                    passLogBaseURL: passLogBaseURL,
+                    useHardwareAcceleration: options.useHardwareAcceleration
                 )
                 videoOutIdx += 1
                 
@@ -165,9 +178,14 @@ public actor RemuxEngine {
         track: MediaTrack,
         outputURL: URL,
         pass: Int? = nil,
-        passLogBaseURL: URL? = nil
+        passLogBaseURL: URL? = nil,
+        useHardwareAcceleration: Bool = true
     ) -> [String] {
         var args = ["-y", "-hide_banner"]
+        
+        if useHardwareAcceleration && track.mediaType == .video && track.action != .copy {
+            args += ["-hwaccel", "videotoolbox"]
+        }
         
         if track.isExternal, let extURL = track.externalURL {
             args += ["-i", extURL.path, "-map", "0:\(track.streamIndex)"]
@@ -185,7 +203,8 @@ public actor RemuxEngine {
                 streamSpecifier: ":v:0",
                 isMP4Like: isMP4Like,
                 pass: pass,
-                passLogBaseURL: passLogBaseURL
+                passLogBaseURL: passLogBaseURL,
+                useHardwareAcceleration: useHardwareAcceleration
             )
         case .audio:
             args += audioEncoderArguments(for: track, streamSpecifier: ":a:0")
@@ -257,7 +276,8 @@ public actor RemuxEngine {
         streamSpecifier spec: String,
         isMP4Like: Bool,
         pass: Int?,
-        passLogBaseURL: URL?
+        passLogBaseURL: URL?,
+        useHardwareAcceleration: Bool
     ) -> [String] {
         guard track.action != .copy else {
             return ["-c\(spec)", "copy"]
@@ -460,10 +480,22 @@ public actor RemuxEngine {
             let validProResProfiles = ["0", "1", "2", "3", "4", "5"]
             let profile = cfg.profile.flatMap { validProResProfiles.contains($0) ? $0 : nil } ?? "2"
             let canPreserveAlpha = (profile == "4" || profile == "5") && cfg.preserveAlpha && hasAlpha
-            let pixFmt = (profile == "4" || profile == "5")
-                ? (canPreserveAlpha ? "yuva444p10le" : "yuv444p10le")
-                : "yuv422p10le"
-            args += ["-c\(spec)", "prores_ks", "-profile\(spec)", profile, "-pix_fmt\(spec)", pixFmt]
+            if useHardwareAcceleration {
+                let pixFmt = (profile == "4" || profile == "5")
+                    ? (canPreserveAlpha ? "ayuv64le" : "p410le")
+                    : "p210le"
+                args += [
+                    "-c\(spec)", "prores_videotoolbox",
+                    "-profile\(spec)", profile,
+                    "-pix_fmt\(spec)", pixFmt,
+                    "-allow_sw\(spec)", "1"
+                ]
+            } else {
+                let pixFmt = (profile == "4" || profile == "5")
+                    ? (canPreserveAlpha ? "yuva444p10le" : "yuv444p10le")
+                    : "yuv422p10le"
+                args += ["-c\(spec)", "prores_ks", "-profile\(spec)", profile, "-pix_fmt\(spec)", pixFmt]
+            }
             
             switch cfg.fieldOrder {
             case .topFirst:
@@ -805,6 +837,7 @@ public actor RemuxEngine {
         file: MediaFile,
         track: MediaTrack,
         outputURL: URL,
+        useHardwareAcceleration: Bool = true,
         ffmpegPathOverride: String? = nil
     ) -> AsyncStream<RemuxProgress> {
         self.isCancelled = false
@@ -838,7 +871,8 @@ public actor RemuxEngine {
                         track: track,
                         outputURL: outputURL,
                         pass: 1,
-                        passLogBaseURL: passLogDir
+                        passLogBaseURL: passLogDir,
+                        useHardwareAcceleration: useHardwareAcceleration
                     )
                     let status1 = await self.runFFmpegProcess(
                         ffmpegPath: ffmpegPath,
@@ -860,7 +894,8 @@ public actor RemuxEngine {
                         track: track,
                         outputURL: outputURL,
                         pass: 2,
-                        passLogBaseURL: passLogDir
+                        passLogBaseURL: passLogDir,
+                        useHardwareAcceleration: useHardwareAcceleration
                     )
                     let status2 = await self.runFFmpegProcess(
                         ffmpegPath: ffmpegPath,
@@ -876,7 +911,12 @@ public actor RemuxEngine {
                         continuation.yield(RemuxProgress(progress: 1.0, currentTime: duration, totalTime: duration, speed: "Done"))
                     }
                 } else {
-                    let args = Self.buildTrackExtractionArguments(file: file, track: track, outputURL: outputURL)
+                    let args = Self.buildTrackExtractionArguments(
+                        file: file,
+                        track: track,
+                        outputURL: outputURL,
+                        useHardwareAcceleration: useHardwareAcceleration
+                    )
                     let status = await self.runFFmpegProcess(
                         ffmpegPath: ffmpegPath,
                         arguments: args,
