@@ -759,4 +759,36 @@ struct StrataCoreTests {
         #expect(summary.contains("Chapters (1)"))
         #expect(summary.contains("Act I"))
     }
+    
+    @Test("FFmpegLocator Init Does Not Pump CFRunLoop During Version Query")
+    @MainActor
+    func testFFmpegLocatorInitDoesNotPumpRunLoop() throws {
+        var observerTickCount = 0
+        let runLoop = CFRunLoopGetCurrent()
+        let observer = CFRunLoopObserverCreateWithHandler(
+            kCFAllocatorDefault,
+            CFRunLoopActivity.allActivities.rawValue,
+            true,
+            0
+        ) { _, _ in
+            observerTickCount += 1
+        }
+        if let observer {
+            CFRunLoopAddObserver(runLoop, observer, .defaultMode)
+            CFRunLoopAddObserver(runLoop, observer, .commonModes)
+        }
+        defer {
+            if let observer {
+                CFRunLoopRemoveObserver(runLoop, observer, .defaultMode)
+                CFRunLoopRemoveObserver(runLoop, observer, .commonModes)
+                CFRunLoopObserverInvalidate(observer)
+            }
+        }
+        
+        let locator = FFmpegLocator()
+        if locator.isReady {
+            #expect(locator.ffmpegVersion?.isEmpty == false)
+        }
+        #expect(observerTickCount == 0, "FFmpegLocator.init() must not spin CFRunLoop (prevents dispatch_once re-entrancy)")
+    }
 }
