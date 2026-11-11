@@ -298,9 +298,10 @@ public actor RemuxEngine {
             let validProfiles = ["baseline", "constrained_baseline", "main", "high", "constrained_high", "extended"]
             let rawProfile = cfg.profile?.lowercased()
             let validProf = rawProfile.flatMap { validProfiles.contains($0) ? $0 : nil }
+            let useX264 = useTwoPassEncoder || !useHardwareAcceleration
             let isBaseline: Bool
             
-            if useTwoPassEncoder {
+            if useX264 {
                 args += ["-c\(spec)", "libx264"]
                 let x264Profile: String?
                 switch validProf {
@@ -328,7 +329,11 @@ public actor RemuxEngine {
                 }
                 
                 args += ["-pix_fmt\(spec)", "yuv420p"]
-                args += ["-b\(spec)", resolvedMultiPassBitrate(for: track)]
+                if useTwoPassEncoder {
+                    args += ["-b\(spec)", resolvedMultiPassBitrate(for: track)]
+                } else if let br = normalizedBitrate(cfg.bitrate) {
+                    args += ["-b\(spec)", br]
+                }
                 
                 if let kf = cfg.keyFrameInterval, kf > 0 {
                     args += ["-g\(spec)", "\(kf)"]
@@ -377,7 +382,7 @@ public actor RemuxEngine {
                 } else {
                     args += ["-bf\(spec)", "2"]
                 }
-                args += ["-pix_fmt\(spec)", "yuv420p"]
+                args += ["-pix_fmt\(spec)", "yuv420p", "-allow_sw\(spec)", "1"]
                 if let br = normalizedBitrate(cfg.bitrate) {
                     args += ["-b\(spec)", br]
                 }
@@ -394,7 +399,7 @@ public actor RemuxEngine {
             let validProfiles = ["main", "main10", "main422", "main42210"]
             let rawProfile = cfg.profile?.lowercased()
             let validProf = rawProfile.flatMap { validProfiles.contains($0) ? $0 : nil }
-            let useX265 = useTwoPassEncoder || (validProf == "main422")
+            let useX265 = useTwoPassEncoder || (validProf == "main422") || !useHardwareAcceleration
             
             if useX265 {
                 args += ["-c\(spec)", "libx265"]
@@ -457,7 +462,7 @@ public actor RemuxEngine {
                     }
                 }
                 
-                args += ["-bf\(spec)", cfg.allowFrameReordering ? "2" : "0"]
+                args += ["-bf\(spec)", cfg.allowFrameReordering ? "2" : "0", "-allow_sw\(spec)", "1"]
                 
                 if let br = normalizedBitrate(cfg.bitrate) {
                     args += ["-b\(spec)", br]
