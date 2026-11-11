@@ -215,17 +215,25 @@ public final class FFmpegLocator: ObservableObject {
         
         let pipe = Pipe()
         process.standardOutput = pipe
-        process.standardError = Pipe()
+        process.standardError = FileHandle.nullDevice
+        
+        let exitSemaphore = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in
+            exitSemaphore.signal()
+        }
         
         do {
             try process.run()
-            process.waitUntilExit()
+            // Drain stdout and wait via DispatchSemaphore instead of Process.waitUntilExit(),
+            // which pumps CFRunLoop and can re-enter dispatch_once if triggered during static shared init.
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            _ = exitSemaphore.wait(timeout: .now() + 2.0)
             if let output = String(data: data, encoding: .utf8) {
                 let firstLine = output.components(separatedBy: .newlines).first ?? ""
                 return firstLine
             }
         } catch {
+            process.terminationHandler = nil
             return nil
         }
         return nil
