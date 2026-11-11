@@ -256,7 +256,8 @@ public final class BatchEngine: ObservableObject {
                     outputURL: outURL,
                     stripAllMetadata: item.stripMetadata,
                     stripChapters: false,
-                    fastStart: item.fastStart && item.targetContainer.supportsFastStart
+                    fastStart: item.fastStart && item.targetContainer.supportsFastStart,
+                    segmentedEncodingMode: .off
                 )
                 
                 let engine = RemuxEngine()
