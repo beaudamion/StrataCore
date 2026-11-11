@@ -21,10 +21,18 @@ public enum RemuxError: LocalizedError {
 }
 
 public actor RemuxEngine {
-    private var activeProcess: Process?
+    private var activeProcesses: [UUID: Process] = [:]
     private var isCancelled: Bool = false
     
     public init() {}
+    
+    private func registerProcess(_ process: Process, id: UUID) {
+        activeProcesses[id] = process
+    }
+    
+    private func unregisterProcess(id: UUID) {
+        activeProcesses.removeValue(forKey: id)
+    }
     
     /// Builds ffmpeg arguments array based on MediaFile, RemuxOptions, and selected tracks.
     public static func buildArguments(
@@ -633,6 +641,231 @@ public actor RemuxEngine {
         return args
     }
     
+    // MARK: - Segmented Export Argument Builders
+    
+    public static func segmentedChunkContainerExtension(
+        for videoTrack: MediaTrack,
+        targetContainer: ContainerFormat
+    ) -> String {
+        if targetContainer == .mkv {
+            return "mkv"
+        }
+        if targetContainer == .mov || videoTrack.action == .transcodeProRes {
+            return "mov"
+        }
+        return "mp4"
+    }
+    
+    public static func requiresSidecarAudioSubtitlePass(
+        for selectedTracks: [MediaTrack],
+        targetContainer: ContainerFormat
+    ) -> Bool {
+        let nonVideoTracks = selectedTracks.filter { $0.mediaType != .video }
+        guard !nonVideoTracks.isEmpty else { return false }
+        let isMP4Like = (targetContainer == .mp4 || targetContainer == .m4v || targetContainer == .mov)
+        return nonVideoTracks.contains { track in
+            if track.isExternal { return true }
+            if track.action != .copy { return true }
+            if isMP4Like && track.mediaType == .subtitle { return true }
+            return false
+        }
+    }
+    
+    public static func buildSegmentedVideoChunkArguments(
+        for file: MediaFile,
+        videoTrack: MediaTrack,
+        boundary: VideoSegmentBoundary,
+        options: RemuxOptions,
+        chunkOutputURL: URL
+    ) -> [String] {
+        var args: [String] = ["-y", "-hide_banner"]
+        
+        if let seekTime = boundary.seekTime {
+            args += ["-ss", String(format: "%.6f", seekTime)]
+        }
+        if options.useHardwareAcceleration {
+            args += ["-hwaccel", "videotoolbox"]
+        }
+        
+        args += ["-i", file.url.path]
+        
+        if boundary.exactEndPTS != nil {
+            args += ["-t", String(format: "%.6f", boundary.expectedDuration)]
+        }
+        
+        args += ["-map", "0:\(videoTrack.streamIndex)", "-an", "-sn", "-dn"]
+        
+        let isMP4Like = (options.targetContainer == .mp4 || options.targetContainer == .m4v || options.targetContainer == .mov)
+        args += videoEncoderArguments(
+            for: videoTrack,
+            streamSpecifier: ":v:0",
+            isMP4Like: isMP4Like,
+            pass: nil,
+            passLogBaseURL: nil,
+            useHardwareAcceleration: options.useHardwareAcceleration
+        )
+        
+        args.append(chunkOutputURL.path)
+        return args
+    }
+    
+    public static func buildSegmentedAudioSubtitleArguments(
+        for file: MediaFile,
+        nonVideoTracks: [MediaTrack],
+        options: RemuxOptions,
+        sidecarOutputURL: URL
+    ) -> [String] {
+        var args: [String] = ["-y", "-hide_banner", "-i", file.url.path]
+        
+        var externalInputMap: [URL: Int] = [:]
+        var nextInputIndex = 1
+        
+        for track in nonVideoTracks where track.isExternal {
+            if let extURL = track.externalURL, externalInputMap[extURL] == nil {
+                externalInputMap[extURL] = nextInputIndex
+                nextInputIndex += 1
+                args += ["-i", extURL.path]
+            }
+        }
+        
+        for track in nonVideoTracks {
+            if track.isExternal, let extURL = track.externalURL, let inputIdx = externalInputMap[extURL] {
+                args += ["-map", "\(inputIdx):\(track.streamIndex)"]
+            } else {
+                args += ["-map", "0:\(track.streamIndex)"]
+            }
+        }
+        
+        let isMP4Like = (options.targetContainer == .mp4 || options.targetContainer == .m4v || options.targetContainer == .mov)
+        var audioOutIdx = 0
+        var subtitleOutIdx = 0
+        
+        for track in nonVideoTracks {
+            switch track.mediaType {
+            case .audio:
+                args += audioEncoderArguments(for: track, streamSpecifier: ":a:\(audioOutIdx)")
+                audioOutIdx += 1
+            case .subtitle:
+                if isMP4Like {
+                    args += ["-c:s:\(subtitleOutIdx)", "mov_text"]
+                } else {
+                    switch track.action {
+                    case .transcodeSRT:
+                        args += ["-c:s:\(subtitleOutIdx)", "subrip"]
+                    case .transcodeMovText:
+                        args += ["-c:s:\(subtitleOutIdx)", "mov_text"]
+                    default:
+                        args += ["-c:s:\(subtitleOutIdx)", "copy"]
+                    }
+                }
+                subtitleOutIdx += 1
+            default:
+                break
+            }
+        }
+        
+        args += ["-vn", "-dn"]
+        args.append(sidecarOutputURL.path)
+        return args
+    }
+    
+    public static func buildSegmentedStitchArguments(
+        for file: MediaFile,
+        concatListURL: URL,
+        sidecarAudioSubURL: URL?,
+        options: RemuxOptions
+    ) throws -> [String] {
+        let selectedTracks = file.tracks.filter { $0.isSelected }
+        guard !selectedTracks.isEmpty else {
+            throw RemuxError.noTracksSelected
+        }
+        
+        var args: [String] = [
+            "-y", "-hide_banner",
+            "-f", "concat", "-safe", "0", "-i", concatListURL.path
+        ]
+        
+        let nonVideoTracks = selectedTracks.filter { $0.mediaType != .video }
+        let needsOriginalMetadata = !options.stripAllMetadata || !options.stripChapters
+        
+        var nonVideoInputIdx: Int? = nil
+        var metadataInputIdx: Int? = nil
+        var nextInputIdx = 1
+        
+        if let sidecarURL = sidecarAudioSubURL {
+            args += ["-i", sidecarURL.path]
+            nonVideoInputIdx = nextInputIdx
+            nextInputIdx += 1
+            if needsOriginalMetadata {
+                args += ["-i", file.url.path]
+                metadataInputIdx = nextInputIdx
+                nextInputIdx += 1
+            }
+        } else if !nonVideoTracks.isEmpty || needsOriginalMetadata {
+            args += ["-i", file.url.path]
+            nonVideoInputIdx = nextInputIdx
+            metadataInputIdx = nextInputIdx
+            nextInputIdx += 1
+        }
+        
+        var sidecarOutStreamIdx = 0
+        for track in selectedTracks {
+            if track.mediaType == .video {
+                args += ["-map", "0:v:0"]
+            } else if let inputIdx = nonVideoInputIdx {
+                if sidecarAudioSubURL != nil {
+                    args += ["-map", "\(inputIdx):\(sidecarOutStreamIdx)"]
+                    sidecarOutStreamIdx += 1
+                } else {
+                    args += ["-map", "\(inputIdx):\(track.streamIndex)"]
+                }
+            }
+        }
+        
+        args += ["-c", "copy"]
+        
+        let isMP4Like = (options.targetContainer == .mp4 || options.targetContainer == .m4v || options.targetContainer == .mov)
+        if isMP4Like, let videoTrack = selectedTracks.first(where: { $0.mediaType == .video }),
+           videoTrack.action == .transcodeHEVC_VT {
+            args += ["-tag:v:0", "hvc1"]
+        }
+        
+        for (totalOutIdx, track) in selectedTracks.enumerated() {
+            if !track.language.isEmpty && track.language != "und" {
+                args += ["-metadata:s:\(totalOutIdx)", "language=\(track.language)"]
+            }
+            if !track.title.isEmpty {
+                args += ["-metadata:s:\(totalOutIdx)", "title=\(track.title)"]
+            }
+            if track.isDefault {
+                args += ["-disposition:s:\(totalOutIdx)", "default"]
+            } else if track.isForced {
+                args += ["-disposition:s:\(totalOutIdx)", "forced"]
+            }
+        }
+        
+        if options.stripAllMetadata {
+            args += ["-map_metadata", "-1"]
+        } else if let metaIdx = metadataInputIdx {
+            args += ["-map_metadata", "\(metaIdx)"]
+        }
+        
+        if options.stripChapters {
+            args += ["-map_chapters", "-1"]
+        } else if let metaIdx = metadataInputIdx {
+            args += ["-map_chapters", "\(metaIdx)"]
+        }
+        
+        if isMP4Like && options.fastStart {
+            args += ["-movflags", "+faststart"]
+        }
+        
+        args.append(options.outputURL.path)
+        return args
+    }
+    
+    // MARK: - Process Runner Helpers
+    
     private func runFFmpegProcess(
         ffmpegPath: String,
         arguments: [String],
@@ -640,8 +873,12 @@ public actor RemuxEngine {
         progressScale: Double,
         progressOffset: Double,
         speedPrefix: String?,
+        activeSegments: Int? = nil,
+        phaseLabel: String? = nil,
+        notice: String? = nil,
         continuation: AsyncStream<RemuxProgress>.Continuation
     ) async -> Int32 {
+        let processID = UUID()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: ffmpegPath)
         process.arguments = arguments
@@ -658,14 +895,20 @@ public actor RemuxEngine {
             terminationContinuation.finish()
         }
         
-        self.activeProcess = process
+        registerProcess(process, id: processID)
         
         do {
             try process.run()
         } catch {
             process.terminationHandler = nil
             terminationContinuation.finish()
-            self.activeProcess = nil
+            unregisterProcess(id: processID)
+            return -1
+        }
+        
+        if self.isCancelled {
+            if process.isRunning { process.terminate() }
+            unregisterProcess(id: processID)
             return -1
         }
         
@@ -691,7 +934,10 @@ public actor RemuxEngine {
                                 speed: speedLabel,
                                 bitrate: update.bitrate,
                                 frame: update.frame,
-                                remainingSeconds: update.remainingSeconds
+                                remainingSeconds: update.remainingSeconds,
+                                activeSegments: activeSegments,
+                                phaseLabel: phaseLabel,
+                                notice: notice
                             ))
                         }
                         lineBuffer.removeAll(keepingCapacity: true)
@@ -718,7 +964,10 @@ public actor RemuxEngine {
                     speed: speedLabel,
                     bitrate: update.bitrate,
                     frame: update.frame,
-                    remainingSeconds: update.remainingSeconds
+                    remainingSeconds: update.remainingSeconds,
+                    activeSegments: activeSegments,
+                    phaseLabel: phaseLabel,
+                    notice: notice
                 ))
             }
         }
@@ -730,7 +979,88 @@ public actor RemuxEngine {
         }
         process.terminationHandler = nil
         let finalStatus = exitStatus ?? (process.isRunning ? -1 : process.terminationStatus)
-        self.activeProcess = nil
+        unregisterProcess(id: processID)
+        return finalStatus
+    }
+    
+    private func runWorkerFFmpeg(
+        ffmpegPath: String,
+        arguments: [String],
+        chunkDuration: Double,
+        onProgress: @Sendable (RemuxProgress) async -> Void
+    ) async -> Int32 {
+        let processID = UUID()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: ffmpegPath)
+        process.arguments = arguments
+        
+        let stderrPipe = Pipe()
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = stderrPipe
+        
+        let (terminationStream, terminationContinuation) = AsyncStream<Int32>.makeStream()
+        process.terminationHandler = { terminatedProcess in
+            terminatedProcess.terminationHandler = nil
+            terminationContinuation.yield(terminatedProcess.terminationStatus)
+            terminationContinuation.finish()
+        }
+        
+        registerProcess(process, id: processID)
+        
+        do {
+            try process.run()
+        } catch {
+            process.terminationHandler = nil
+            terminationContinuation.finish()
+            unregisterProcess(id: processID)
+            return -1
+        }
+        
+        if self.isCancelled {
+            if process.isRunning { process.terminate() }
+            unregisterProcess(id: processID)
+            return -1
+        }
+        
+        let fileHandle = stderrPipe.fileHandleForReading
+        var lineBuffer = Data()
+        lineBuffer.reserveCapacity(256)
+        
+        do {
+            for try await byteData in fileHandle.bytes {
+                if self.isCancelled { break }
+                if byteData == 0x0A || byteData == 0x0D {
+                    if !lineBuffer.isEmpty {
+                        if let line = String(data: lineBuffer, encoding: .utf8),
+                           let update = MediaFormatters.parseFFmpegProgress(line: line, totalDuration: chunkDuration) {
+                            await onProgress(update)
+                        }
+                        lineBuffer.removeAll(keepingCapacity: true)
+                    }
+                } else {
+                    lineBuffer.append(byteData)
+                }
+            }
+        } catch {
+            // Stream read terminated
+        }
+        
+        if !self.isCancelled && !lineBuffer.isEmpty {
+            if let line = String(data: lineBuffer, encoding: .utf8),
+               let update = MediaFormatters.parseFFmpegProgress(line: line, totalDuration: chunkDuration) {
+                await onProgress(update)
+            }
+        }
+        
+        var exitStatus: Int32?
+        for await status in terminationStream {
+            exitStatus = status
+            break
+        }
+        process.terminationHandler = nil
+        let finalStatus = exitStatus ?? (process.isRunning ? -1 : process.terminationStatus)
+        unregisterProcess(id: processID)
         return finalStatus
     }
     
@@ -738,7 +1068,9 @@ public actor RemuxEngine {
     public func run(
         file: MediaFile,
         options: RemuxOptions,
-        ffmpegPathOverride: String? = nil
+        ffmpegPathOverride: String? = nil,
+        ffprobePathOverride: String? = nil,
+        capabilitiesOverride: HardwareMediaCapabilities? = nil
     ) -> AsyncStream<RemuxProgress> {
         self.isCancelled = false
         
@@ -749,6 +1081,23 @@ public actor RemuxEngine {
                     return
                 }
                 
+                // Ensure parent directory of output exists
+                let parentDir = options.outputURL.deletingLastPathComponent()
+                try? FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
+                
+                let capabilities: HardwareMediaCapabilities
+                if let override = capabilitiesOverride {
+                    capabilities = override
+                } else {
+                    capabilities = await HardwareCapabilities.detectWithCoordinator()
+                }
+                
+                let decision = HardwareCapabilities.resolveSegmentation(
+                    for: file,
+                    options: options,
+                    capabilities: capabilities
+                )
+                
                 let selectedTracks = file.tracks.filter { $0.isSelected }
                 let needsTwoPass = selectedTracks.contains {
                     $0.mediaType == .video &&
@@ -756,45 +1105,116 @@ public actor RemuxEngine {
                     ($0.action == .transcodeH264_VT || $0.action == .transcodeHEVC_VT)
                 }
                 
-                // Ensure parent directory of output exists
-                let parentDir = options.outputURL.deletingLastPathComponent()
-                try? FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
-                
-                let duration = file.duration
-                
-                if needsTwoPass {
-                    let passLogDir = FileManager.default.temporaryDirectory
-                        .appendingPathComponent("strata_2pass_\(UUID().uuidString)")
-                    try? FileManager.default.createDirectory(at: passLogDir, withIntermediateDirectories: true)
-                    defer {
-                        try? FileManager.default.removeItem(at: passLogDir)
-                    }
+                if decision.isSegmented,
+                   !needsTwoPass,
+                   let videoTrack = selectedTracks.first(where: { $0.mediaType == .video }),
+                   let ffprobePath = ffprobePathOverride ?? FFmpegLocator.shared.ffprobePath {
                     
-                    let pass1Args: [String]
-                    let pass2Args: [String]
-                    do {
-                        pass1Args = try Self.buildArguments(for: file, options: options, pass: 1, passLogBaseURL: passLogDir)
-                        pass2Args = try Self.buildArguments(for: file, options: options, pass: 2, passLogBaseURL: passLogDir)
-                    } catch {
-                        continuation.finish()
-                        return
-                    }
-                    
-                    let status1 = await self.runFFmpegProcess(
-                        ffmpegPath: ffmpegPath,
-                        arguments: pass1Args,
-                        duration: duration,
-                        progressScale: 0.5,
-                        progressOffset: 0.0,
-                        speedPrefix: "Pass 1/2",
-                        continuation: continuation
+                    let minimumChunkDur = min(2.5, max(1.0, file.duration / Double(decision.segmentCount * 2)))
+                    let boundaries = await KeyframeProber.probeBoundaries(
+                        fileURL: file.url,
+                        videoStreamIndex: videoTrack.streamIndex,
+                        duration: file.duration,
+                        startTime: file.startTime,
+                        segmentCount: decision.segmentCount,
+                        ffprobePath: ffprobePath,
+                        minimumChunkDuration: minimumChunkDur
                     )
                     
-                    guard !self.isCancelled && status1 == 0 else {
+                    if boundaries.count >= 2 && !self.isCancelled {
+                        await self.runSegmented(
+                            file: file,
+                            videoTrack: videoTrack,
+                            boundaries: boundaries,
+                            options: options,
+                            decision: decision,
+                            ffmpegPath: ffmpegPath,
+                            continuation: continuation
+                        )
+                        continuation.finish()
+                        return
+                    } else if !self.isCancelled {
+                        let sparseNotice = decision.notice ?? "Sparse keyframes prevented splitting — running single-stream mode."
+                        await self.runSingleStream(
+                            file: file,
+                            options: options,
+                            needsTwoPass: false,
+                            ffmpegPath: ffmpegPath,
+                            family: decision.engineFamily,
+                            notice: sparseNotice,
+                            continuation: continuation
+                        )
                         continuation.finish()
                         return
                     }
-                    
+                }
+                
+                await self.runSingleStream(
+                    file: file,
+                    options: options,
+                    needsTwoPass: needsTwoPass,
+                    ffmpegPath: ffmpegPath,
+                    family: decision.engineFamily,
+                    notice: decision.notice,
+                    continuation: continuation
+                )
+                
+                continuation.finish()
+            }
+        }
+    }
+    
+    private func runSingleStream(
+        file: MediaFile,
+        options: RemuxOptions,
+        needsTwoPass: Bool,
+        ffmpegPath: String,
+        family: MediaEngineFamily?,
+        notice: String?,
+        continuation: AsyncStream<RemuxProgress>.Continuation
+    ) async {
+        let duration = file.duration
+        if let fam = family {
+            await HardwareSessionCoordinator.shared.acquire(family: fam, count: 1)
+        }
+        
+        if let notice {
+            continuation.yield(RemuxProgress(
+                progress: 0.0,
+                currentTime: 0,
+                totalTime: duration,
+                speed: "Starting...",
+                activeSegments: 1,
+                phaseLabel: "Single Stream",
+                notice: notice
+            ))
+        }
+        
+        if needsTwoPass {
+            let passLogDir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("strata_2pass_\(UUID().uuidString)")
+            try? FileManager.default.createDirectory(at: passLogDir, withIntermediateDirectories: true)
+            defer {
+                try? FileManager.default.removeItem(at: passLogDir)
+            }
+            
+            if let pass1Args = try? Self.buildArguments(for: file, options: options, pass: 1, passLogBaseURL: passLogDir),
+               let pass2Args = try? Self.buildArguments(for: file, options: options, pass: 2, passLogBaseURL: passLogDir) {
+                
+                let status1 = await self.runFFmpegProcess(
+                    ffmpegPath: ffmpegPath,
+                    arguments: pass1Args,
+                    duration: duration,
+                    progressScale: 0.5,
+                    progressOffset: 0.0,
+                    speedPrefix: "Pass 1/2",
+                    activeSegments: 1,
+                    phaseLabel: nil,
+                    notice: notice,
+                    continuation: continuation
+                )
+                
+                if !self.isCancelled && status1 == 0 {
                     let status2 = await self.runFFmpegProcess(
                         ffmpegPath: ffmpegPath,
                         arguments: pass2Args,
@@ -802,38 +1222,237 @@ public actor RemuxEngine {
                         progressScale: 0.5,
                         progressOffset: 0.5,
                         speedPrefix: "Pass 2/2",
+                        activeSegments: 1,
+                        phaseLabel: nil,
+                        notice: notice,
                         continuation: continuation
                     )
                     
                     if !self.isCancelled && status2 == 0 {
-                        continuation.yield(RemuxProgress(progress: 1.0, currentTime: duration, totalTime: duration, speed: "Done"))
-                    }
-                } else {
-                    let arguments: [String]
-                    do {
-                        arguments = try Self.buildArguments(for: file, options: options)
-                    } catch {
-                        continuation.finish()
-                        return
-                    }
-                    
-                    let status = await self.runFFmpegProcess(
-                        ffmpegPath: ffmpegPath,
-                        arguments: arguments,
-                        duration: duration,
-                        progressScale: 1.0,
-                        progressOffset: 0.0,
-                        speedPrefix: nil,
-                        continuation: continuation
-                    )
-                    
-                    if !self.isCancelled && status == 0 {
-                        continuation.yield(RemuxProgress(progress: 1.0, currentTime: duration, totalTime: duration, speed: "Done"))
+                        continuation.yield(RemuxProgress(
+                            progress: 1.0,
+                            currentTime: duration,
+                            totalTime: duration,
+                            speed: "Done",
+                            activeSegments: 1,
+                            phaseLabel: nil,
+                            notice: notice
+                        ))
                     }
                 }
-                
-                continuation.finish()
             }
+        } else if let arguments = try? Self.buildArguments(for: file, options: options) {
+            let status = await self.runFFmpegProcess(
+                ffmpegPath: ffmpegPath,
+                arguments: arguments,
+                duration: duration,
+                progressScale: 1.0,
+                progressOffset: 0.0,
+                speedPrefix: nil,
+                activeSegments: 1,
+                phaseLabel: nil,
+                notice: notice,
+                continuation: continuation
+            )
+            
+            if !self.isCancelled && status == 0 {
+                continuation.yield(RemuxProgress(
+                    progress: 1.0,
+                    currentTime: duration,
+                    totalTime: duration,
+                    speed: "Done",
+                    activeSegments: 1,
+                    phaseLabel: nil,
+                    notice: notice
+                ))
+            }
+        }
+        
+        if let fam = family {
+            await HardwareSessionCoordinator.shared.release(family: fam, count: 1)
+        }
+    }
+    
+    private func runSegmented(
+        file: MediaFile,
+        videoTrack: MediaTrack,
+        boundaries: [VideoSegmentBoundary],
+        options: RemuxOptions,
+        decision: SegmentationDecision,
+        ffmpegPath: String,
+        continuation: AsyncStream<RemuxProgress>.Continuation
+    ) async {
+        let segmentCount = boundaries.count
+        let totalDuration = max(0.01, file.duration)
+        let workDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("strata_seg_\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: workDir)
+        }
+        
+        if let fam = decision.engineFamily {
+            await HardwareSessionCoordinator.shared.acquire(family: fam, count: segmentCount)
+        }
+        
+        let phaseTag = "\(segmentCount)× Segmented"
+        continuation.yield(RemuxProgress(
+            progress: 0.0,
+            currentTime: 0,
+            totalTime: totalDuration,
+            speed: "Preparing...",
+            activeSegments: segmentCount,
+            phaseLabel: phaseTag,
+            notice: decision.notice
+        ))
+        
+        let chunkExt = Self.segmentedChunkContainerExtension(for: videoTrack, targetContainer: options.targetContainer)
+        let chunkURLs: [URL] = boundaries.map { b in
+            workDir.appendingPathComponent("chunk_\(b.index).\(chunkExt)")
+        }
+        
+        let selectedTracks = file.tracks.filter { $0.isSelected }
+        let nonVideoTracks = selectedTracks.filter { $0.mediaType != .video }
+        let needsSidecar = Self.requiresSidecarAudioSubtitlePass(for: selectedTracks, targetContainer: options.targetContainer)
+        let sidecarExt = options.targetContainer == .m4v ? "mp4" : options.targetContainer.fileExtension
+        let sidecarURL: URL? = needsSidecar ? workDir.appendingPathComponent("sidecar_audio_subs.\(sidecarExt)") : nil
+        
+        let aggregator = SegmentedProgressAggregator(
+            boundaries: boundaries,
+            totalDuration: totalDuration,
+            segmentCount: segmentCount,
+            phaseLabel: phaseTag,
+            notice: decision.notice
+        )
+        
+        var allWorkersSucceeded = true
+        
+        await withTaskGroup(of: Int32.self) { group in
+            for boundary in boundaries {
+                let cURL = chunkURLs[boundary.index]
+                let chunkArgs = Self.buildSegmentedVideoChunkArguments(
+                    for: file,
+                    videoTrack: videoTrack,
+                    boundary: boundary,
+                    options: options,
+                    chunkOutputURL: cURL
+                )
+                let expectedDur = max(0.1, boundary.expectedDuration)
+                let idx = boundary.index
+                
+                group.addTask { [weak self] in
+                    guard let self else { return -1 }
+                    let exitCode = await self.runWorkerFFmpeg(
+                        ffmpegPath: ffmpegPath,
+                        arguments: chunkArgs,
+                        chunkDuration: expectedDur
+                    ) { update in
+                        if let merged = await aggregator.updateChunk(index: idx, progress: update) {
+                            continuation.yield(merged)
+                        }
+                    }
+                    if exitCode == 0 {
+                        if let merged = await aggregator.markChunkCompleted(index: idx) {
+                            continuation.yield(merged)
+                        }
+                    }
+                    return exitCode
+                }
+            }
+            
+            if let sURL = sidecarURL {
+                let sidecarArgs = Self.buildSegmentedAudioSubtitleArguments(
+                    for: file,
+                    nonVideoTracks: nonVideoTracks,
+                    options: options,
+                    sidecarOutputURL: sURL
+                )
+                group.addTask { [weak self] in
+                    guard let self else { return -1 }
+                    return await self.runWorkerFFmpeg(
+                        ffmpegPath: ffmpegPath,
+                        arguments: sidecarArgs,
+                        chunkDuration: totalDuration,
+                        onProgress: { _ in }
+                    )
+                }
+            }
+            
+            for await exitCode in group {
+                if exitCode != 0 {
+                    allWorkersSucceeded = false
+                    self.cancel()
+                }
+            }
+        }
+        
+        if let fam = decision.engineFamily {
+            await HardwareSessionCoordinator.shared.release(family: fam, count: segmentCount)
+        }
+        
+        if self.isCancelled || !allWorkersSucceeded {
+            try? FileManager.default.removeItem(at: options.outputURL)
+            return
+        }
+        
+        // Stitch phase (0.92 -> 1.00)
+        let concatListURL = workDir.appendingPathComponent("concat_list.txt")
+        let concatManifest = chunkURLs
+            .map { url in
+                let escaped = url.path.replacingOccurrences(of: "'", with: "'\\''")
+                return "file '\(escaped)'"
+            }
+            .joined(separator: "\n") + "\n"
+        do {
+            try concatManifest.write(to: concatListURL, atomically: true, encoding: .utf8)
+        } catch {
+            return
+        }
+        
+        guard let stitchArgs = try? Self.buildSegmentedStitchArguments(
+            for: file,
+            concatListURL: concatListURL,
+            sidecarAudioSubURL: sidecarURL,
+            options: options
+        ) else {
+            return
+        }
+        
+        continuation.yield(RemuxProgress(
+            progress: 0.93,
+            currentTime: totalDuration * 0.93,
+            totalTime: totalDuration,
+            speed: "Stitching...",
+            activeSegments: segmentCount,
+            phaseLabel: "Stitching segments...",
+            notice: decision.notice
+        ))
+        
+        let stitchStatus = await self.runFFmpegProcess(
+            ffmpegPath: ffmpegPath,
+            arguments: stitchArgs,
+            duration: totalDuration,
+            progressScale: 0.07,
+            progressOffset: 0.93,
+            speedPrefix: nil,
+            activeSegments: segmentCount,
+            phaseLabel: "Stitching segments...",
+            notice: decision.notice,
+            continuation: continuation
+        )
+        
+        if !self.isCancelled && stitchStatus == 0 {
+            continuation.yield(RemuxProgress(
+                progress: 1.0,
+                currentTime: totalDuration,
+                totalTime: totalDuration,
+                speed: "Done",
+                activeSegments: segmentCount,
+                phaseLabel: nil,
+                notice: decision.notice
+            ))
+        } else {
+            try? FileManager.default.removeItem(at: options.outputURL)
         }
     }
     
@@ -944,9 +1563,128 @@ public actor RemuxEngine {
     
     public func cancel() {
         self.isCancelled = true
-        if let proc = activeProcess, proc.isRunning {
-            proc.terminate()
+        for (_, proc) in activeProcesses {
+            if proc.isRunning {
+                proc.terminate()
+            }
         }
-        self.activeProcess = nil
+        activeProcesses.removeAll()
+    }
+}
+
+// MARK: - Segmented Progress Aggregator
+
+private actor SegmentedProgressAggregator {
+    private let boundaries: [VideoSegmentBoundary]
+    private let totalDuration: Double
+    private let segmentCount: Int
+    private let phaseLabel: String
+    private let notice: String?
+    
+    private var chunkTimes: [Int: Double] = [:]
+    private var chunkFPS: [Int: Double] = [:]
+    private var chunkSpeeds: [Int: Double] = [:]
+    private var chunkFrames: [Int: Int64] = [:]
+    private var chunkBitrateKbps: [Int: Double] = [:]
+    private var completedChunks: Set<Int> = []
+    private var lastEmitTime: ContinuousClock.Instant?
+    
+    init(
+        boundaries: [VideoSegmentBoundary],
+        totalDuration: Double,
+        segmentCount: Int,
+        phaseLabel: String,
+        notice: String?
+    ) {
+        self.boundaries = boundaries
+        self.totalDuration = max(0.01, totalDuration)
+        self.segmentCount = segmentCount
+        self.phaseLabel = phaseLabel
+        self.notice = notice
+    }
+    
+    func updateChunk(index: Int, progress: RemuxProgress) -> RemuxProgress? {
+        guard !completedChunks.contains(index) else { return nil }
+        let maxDur = index < boundaries.count ? boundaries[index].expectedDuration : progress.totalTime
+        chunkTimes[index] = min(maxDur, max(0, progress.currentTime))
+        chunkFPS[index] = progress.fps
+        chunkFrames[index] = progress.frame
+        
+        let spdClean = progress.speed.replacingOccurrences(of: "x", with: "")
+        if let spdVal = Double(spdClean), spdVal > 0 {
+            chunkSpeeds[index] = spdVal
+        }
+        if let kbps = Self.parseBitrateKbps(progress.bitrate) {
+            chunkBitrateKbps[index] = kbps
+        }
+        
+        let now = ContinuousClock.now
+        if let last = lastEmitTime, now - last < .milliseconds(120) {
+            return nil
+        }
+        lastEmitTime = now
+        return buildAggregate()
+    }
+    
+    func markChunkCompleted(index: Int) -> RemuxProgress? {
+        completedChunks.insert(index)
+        if index < boundaries.count {
+            chunkTimes[index] = boundaries[index].expectedDuration
+        }
+        chunkSpeeds[index] = 0
+        chunkFPS[index] = 0
+        lastEmitTime = ContinuousClock.now
+        return buildAggregate()
+    }
+    
+    private func buildAggregate() -> RemuxProgress {
+        let doneTime = min(totalDuration, chunkTimes.values.reduce(0, +))
+        let scaledFraction = min(0.92, (doneTime / totalDuration) * 0.92)
+        let activeFPS = chunkFPS.values.reduce(0, +)
+        let activeSpeed = chunkSpeeds.values.reduce(0, +)
+        let totalFrames = chunkFrames.values.reduce(0, +)
+        
+        let speedDisplay = activeSpeed > 0.05
+            ? String(format: "%.2fx", activeSpeed)
+            : "Encoding..."
+        let eta: Double? = activeSpeed > 0.05
+            ? max(0, (totalDuration - doneTime) / activeSpeed)
+            : nil
+        
+        let totalKbps = chunkBitrateKbps.values.reduce(0, +)
+        let avgKbps = chunkBitrateKbps.isEmpty ? 0 : (totalKbps / Double(chunkBitrateKbps.count))
+        let bitrateDisplay: String
+        if avgKbps >= 1000.0 {
+            bitrateDisplay = String(format: "%.1f Mbits/s", avgKbps / 1000.0)
+        } else if avgKbps > 0 {
+            bitrateDisplay = String(format: "%.0f kbits/s", avgKbps)
+        } else {
+            bitrateDisplay = ""
+        }
+        
+        return RemuxProgress(
+            progress: scaledFraction,
+            currentTime: doneTime,
+            totalTime: totalDuration,
+            fps: activeFPS,
+            speed: speedDisplay,
+            bitrate: bitrateDisplay,
+            frame: totalFrames,
+            remainingSeconds: eta,
+            activeSegments: segmentCount,
+            phaseLabel: phaseLabel,
+            notice: notice
+        )
+    }
+    
+    private static func parseBitrateKbps(_ raw: String) -> Double? {
+        let lower = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if lower.hasSuffix("kbits/s") {
+            return Double(lower.replacingOccurrences(of: "kbits/s", with: ""))
+        }
+        if lower.hasSuffix("mbits/s"), let val = Double(lower.replacingOccurrences(of: "mbits/s", with: "")) {
+            return val * 1000.0
+        }
+        return nil
     }
 }

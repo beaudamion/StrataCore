@@ -15,7 +15,10 @@ let package = Package(
     targets: [
         .target(
             name: "StrataCore",
-            path: "Sources/StrataCore"
+            path: "Sources/StrataCore",
+            linkerSettings: [
+                .linkedFramework("IOKit")
+            ]
         ),
         .testTarget(
             name: "StrataCoreTests",
