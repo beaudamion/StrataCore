@@ -468,6 +468,7 @@ struct StrataCoreTests {
             options: RemuxOptions(targetContainer: .mp4, outputURL: mp4Out)
         )
         #expect(h264Args.contains("h264_videotoolbox"))
+        #expect(h264Args.contains("-allow_sw:v:0"))
         #expect(h264Args.contains("-profile:v:0"))
         #expect(h264Args.contains("high"))
         #expect(h264Args.contains("-coder:v:0"))
@@ -507,6 +508,7 @@ struct StrataCoreTests {
             options: RemuxOptions(targetContainer: .mp4, outputURL: mp4Out)
         )
         #expect(hevcArgs.contains("hevc_videotoolbox"))
+        #expect(hevcArgs.contains("-allow_sw:v:0"))
         #expect(hevcArgs.contains("main10"))
         #expect(hevcArgs.contains("p010le"))
         #expect(hevcArgs.contains("hvc1"))
@@ -592,7 +594,7 @@ struct StrataCoreTests {
         #expect(proRes422Args.contains("prores_videotoolbox"))
         #expect(proRes422Args.contains("p210le"))
         
-        // Software fallback when useHardwareAcceleration == false
+        // Software fallback when useHardwareAcceleration == false across ProRes, H.264, and HEVC
         let proResSWArgs = try RemuxEngine.buildArguments(
             for: MediaFile(url: sourceURL, filename: "source.mkv", fileSize: 10_000, containerFormat: "matroska", duration: 10, tracks: [proResAlphaKeep]),
             options: RemuxOptions(targetContainer: .mov, outputURL: movOut, useHardwareAcceleration: false)
@@ -600,6 +602,22 @@ struct StrataCoreTests {
         #expect(!proResSWArgs.contains("-hwaccel"))
         #expect(proResSWArgs.contains("prores_ks"))
         #expect(proResSWArgs.contains("yuva444p10le"))
+        
+        let h264SWArgs = try RemuxEngine.buildArguments(
+            for: MediaFile(url: sourceURL, filename: "source.mkv", fileSize: 10_000, containerFormat: "matroska", duration: 10, tracks: [h264Track]),
+            options: RemuxOptions(targetContainer: .mp4, outputURL: mp4Out, useHardwareAcceleration: false)
+        )
+        #expect(!h264SWArgs.contains("-hwaccel"))
+        #expect(h264SWArgs.contains("libx264"))
+        #expect(!h264SWArgs.contains("-pass:v:0"))
+        
+        let hevcSWArgs = try RemuxEngine.buildArguments(
+            for: MediaFile(url: sourceURL, filename: "source.mkv", fileSize: 10_000, containerFormat: "matroska", duration: 10, tracks: [hevc10Track]),
+            options: RemuxOptions(targetContainer: .mp4, outputURL: mp4Out, useHardwareAcceleration: false)
+        )
+        #expect(!hevcSWArgs.contains("-hwaccel"))
+        #expect(hevcSWArgs.contains("libx265"))
+        #expect(!hevcSWArgs.contains("-x265-params:v:0"))
         
         // Passthrough video (even with audio transcode) omits -hwaccel videotoolbox
         let copyVideoTrack = MediaTrack(streamIndex: 0, mediaType: .video, codecName: "h264", isSelected: true, action: .copy)
