@@ -169,7 +169,8 @@ public enum ExecutionPlanner {
             }
         case .transcodeProRes:
             // ProRes 4444 / 4444 XQ use 4:4:4 p410/ayuv paths; route ProRes 422 family (0..3) only when VLD compatible
-            if prof == "4" || prof == "5" {
+            let resolvedProf = track.resolvedProResProfile
+            if resolvedProf == "4" || resolvedProf == "5" {
                 return false
             }
             if cfg.fieldOrder == .topFirst || cfg.fieldOrder == .bottomFirst {
