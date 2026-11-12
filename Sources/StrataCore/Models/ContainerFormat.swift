@@ -57,4 +57,31 @@ public enum ContainerFormat: String, CaseIterable, Identifiable, Codable, Sendab
             return "webvtt"
         }
     }
+    
+    public func supportsVideoAction(_ action: TrackAction) -> Bool {
+        guard action != .copy else { return true }
+        switch self {
+        case .mov:
+            return action != .transcodeAV1
+        case .mp4, .m4v:
+            return action == .transcodeH264_VT || action == .transcodeHEVC_VT || action == .transcodeAV1
+        case .mkv:
+            return true
+        case .webm:
+            return action == .transcodeAV1
+        }
+    }
+    
+    public func recommendedContainersDescription(forVideoAction action: TrackAction) -> String {
+        switch action {
+        case .transcodeAV1:
+            return "MP4, M4V, MKV, or WebM"
+        case .transcodeProRes, .transcodeUncompressed8, .transcodeUncompressed10:
+            return "MOV (QuickTime) or MKV"
+        case .transcodeH264_VT, .transcodeHEVC_VT:
+            return "MP4, M4V, MOV, or MKV"
+        default:
+            return "MP4, MKV, or MOV"
+        }
+    }
 }

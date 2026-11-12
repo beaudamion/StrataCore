@@ -41,7 +41,10 @@ public enum NamingPatternHelper {
             switch track.action {
             case .transcodeH264_VT: codec = "h264"
             case .transcodeHEVC_VT: codec = "hevc"
+            case .transcodeAV1: codec = "av1"
             case .transcodeProRes: codec = "prores"
+            case .transcodeUncompressed8: codec = "2vuy"
+            case .transcodeUncompressed10: codec = "v210"
             case .transcodeALAC: codec = "alac"
             case .transcodeFLAC: codec = "flac"
             case .transcodeMP3: codec = "mp3"

@@ -714,6 +714,149 @@ struct StrataCoreTests {
         #expect(hevcPass2.contains("-tag:v:0"))
         #expect(hevcPass2.contains("hvc1"))
         #expect(hevcPass2.contains { $0.contains("pass=2:stats=") })
+        
+        // 7. AV1 (libsvtav1), Uncompressed 8-Bit 4:2:2 (2vuy), Uncompressed 10-Bit 4:2:2 (v210), Container Matrix, & Codable Backwards Compatibility
+        #expect(TrackAction.transcodeAV1.title == "AV1")
+        #expect(TrackAction.transcodeUncompressed8.title == "Uncompressed 8-Bit 4:2:2")
+        #expect(TrackAction.transcodeUncompressed10.title == "Uncompressed 10-Bit 4:2:2")
+        #expect(TrackAction.transcodeAV1.supportsVideoConfig == true)
+        #expect(TrackAction.transcodeUncompressed8.supportsVideoConfig == true)
+        #expect(TrackAction.transcodeUncompressed10.supportsVideoConfig == true)
+        
+        // Container compatibility matrix
+        #expect(ContainerFormat.mp4.supportsVideoAction(.transcodeAV1) == true)
+        #expect(ContainerFormat.m4v.supportsVideoAction(.transcodeAV1) == true)
+        #expect(ContainerFormat.mkv.supportsVideoAction(.transcodeAV1) == true)
+        #expect(ContainerFormat.webm.supportsVideoAction(.transcodeAV1) == true)
+        #expect(ContainerFormat.mov.supportsVideoAction(.transcodeAV1) == false)
+        
+        #expect(ContainerFormat.mov.supportsVideoAction(.transcodeUncompressed8) == true)
+        #expect(ContainerFormat.mkv.supportsVideoAction(.transcodeUncompressed8) == true)
+        #expect(ContainerFormat.mp4.supportsVideoAction(.transcodeUncompressed8) == false)
+        #expect(ContainerFormat.m4v.supportsVideoAction(.transcodeUncompressed10) == false)
+        #expect(ContainerFormat.webm.supportsVideoAction(.transcodeUncompressed10) == false)
+        #expect(ContainerFormat.webm.supportsVideoAction(.transcodeH264_VT) == false)
+        
+        // AV1 & Uncompressed config defaults, sanitization, exportExtension, & NamingPatternHelper
+        var av1Cfg = VideoEncodingConfig.default(for: .transcodeAV1)
+        #expect(av1Cfg.profile == "auto")
+        #expect(av1Cfg.svtPreset == 6)
+        av1Cfg.rateControlMode = .twoPassVBR
+        av1Cfg.multiPass = true
+        av1Cfg.sanitize(for: .transcodeAV1)
+        #expect(av1Cfg.effectiveRateControlMode == .averageBitrate)
+        #expect(av1Cfg.multiPass == false)
+        
+        var uncCfg = VideoEncodingConfig.default(for: .transcodeUncompressed10)
+        uncCfg.bitrate = "15000k"
+        uncCfg.svtPreset = 4
+        uncCfg.profile = "4"
+        uncCfg.sanitize(for: .transcodeUncompressed10)
+        #expect(uncCfg.bitrate == "auto")
+        #expect(uncCfg.svtPreset == nil)
+        #expect(uncCfg.profile == nil)
+        
+        // Backwards-compatible Codable decode without newer keys like svtPreset
+        let legacyJSON = #"{"bitrate":"auto","allowFrameReordering":true,"preserveAlpha":false,"multiPass":false,"rateControlMode":"constant_quality","qualityScale":65,"spatialAQ":true,"deinterlaceMode":"auto","resizeOption":"original","rotation":"none"}"#
+        let decodedLegacy = try JSONDecoder().decode(VideoEncodingConfig.self, from: Data(legacyJSON.utf8))
+        #expect(decodedLegacy.svtPreset == nil)
+        #expect(decodedLegacy.qualityScale == 65)
+        
+        let av1CQTrack = MediaTrack(
+            streamIndex: 0,
+            mediaType: .video,
+            codecName: "h264",
+            width: 1920,
+            height: 1080,
+            pixelFormat: "yuv420p",
+            isSelected: true,
+            action: .transcodeAV1,
+            videoConfig: VideoEncodingConfig(
+                bitrate: "auto",
+                colorSpace: .rec709,
+                profile: "10bit",
+                rateControlMode: .constantQuality,
+                qualityScale: 65,
+                svtPreset: 4
+            )
+        )
+        #expect(av1CQTrack.exportExtension == "mp4")
+        #expect(NamingPatternHelper.formatFilename(pattern: "{filename}_{codec}.{ext}", sourceFilename: "Clip.mkv", track: av1CQTrack, targetExtension: "mp4") == "Clip_av1.mp4")
+        
+        let av1CQArgs = try RemuxEngine.buildArguments(
+            for: MediaFile(url: sourceURL, filename: "source.mkv", fileSize: 10_000, containerFormat: "matroska", duration: 10, tracks: [av1CQTrack]),
+            options: RemuxOptions(targetContainer: .mp4, outputURL: mp4Out)
+        )
+        #expect(av1CQArgs.contains("libsvtav1"))
+        #expect(av1CQArgs.contains("-preset:v:0"))
+        #expect(av1CQArgs.contains("4"))
+        #expect(av1CQArgs.contains("yuv420p10le"))
+        #expect(av1CQArgs.contains("-crf:v:0"))
+        #expect(av1CQArgs.contains("29"))
+        #expect(!av1CQArgs.contains("rc=1"))
+        
+        var av1ABRTrack = av1CQTrack
+        av1ABRTrack.videoConfig.rateControlMode = .averageBitrate
+        av1ABRTrack.videoConfig.bitrate = "4500k"
+        av1ABRTrack.videoConfig.maxBitrate = "9000k" // Ensure ABR never mixes mbr with rc=1
+        let av1ABRArgs = try RemuxEngine.buildArguments(
+            for: MediaFile(url: sourceURL, filename: "source.mkv", fileSize: 10_000, containerFormat: "matroska", duration: 10, tracks: [av1ABRTrack]),
+            options: RemuxOptions(targetContainer: .webm, outputURL: URL(fileURLWithPath: "/tmp/out.webm"))
+        )
+        #expect(av1ABRArgs.contains("-b:v:0"))
+        #expect(av1ABRArgs.contains("4500k"))
+        #expect(av1ABRArgs.contains("-svtav1-params:v:0"))
+        #expect(av1ABRArgs.contains("rc=1"))
+        #expect(!av1ABRArgs.contains { $0.contains("mbr=") })
+        
+        let unc8Track = MediaTrack(
+            streamIndex: 0,
+            mediaType: .video,
+            codecName: "h264",
+            width: 1920,
+            height: 1080,
+            pixelFormat: "yuv420p",
+            isSelected: true,
+            action: .transcodeUncompressed8,
+            videoConfig: VideoEncodingConfig(fieldOrder: .topFirst, colorSpace: .rec709)
+        )
+        #expect(unc8Track.exportExtension == "mov")
+        #expect(NamingPatternHelper.formatFilename(pattern: "{filename}_{codec}.{ext}", sourceFilename: "Clip.mkv", track: unc8Track, targetExtension: "mov") == "Clip_2vuy.mov")
+        let unc8MovArgs = try RemuxEngine.buildArguments(
+            for: MediaFile(url: sourceURL, filename: "source.mkv", fileSize: 10_000, containerFormat: "matroska", duration: 10, tracks: [unc8Track]),
+            options: RemuxOptions(targetContainer: .mov, outputURL: movOut)
+        )
+        #expect(unc8MovArgs.contains("rawvideo"))
+        #expect(unc8MovArgs.contains("uyvy422"))
+        #expect(unc8MovArgs.contains("-tag:v:0"))
+        #expect(unc8MovArgs.contains("2vuy"))
+        #expect(unc8MovArgs.contains("+faststart+write_colr"))
+        #expect(unc8MovArgs.contains("+ilme+ildct"))
+        #expect(unc8MovArgs.contains { $0.contains("field_mode=tff") })
+        
+        let unc10Track = MediaTrack(
+            streamIndex: 0,
+            mediaType: .video,
+            codecName: "h264",
+            width: 1920,
+            height: 1080,
+            pixelFormat: "yuv420p",
+            isSelected: true,
+            action: .transcodeUncompressed10,
+            videoConfig: VideoEncodingConfig(colorSpace: .rec709)
+        )
+        #expect(unc10Track.exportExtension == "mov")
+        #expect(NamingPatternHelper.formatFilename(pattern: "{filename}_{codec}.{ext}", sourceFilename: "Clip.mkv", track: unc10Track, targetExtension: "mov") == "Clip_v210.mov")
+        let unc10MovArgs = try RemuxEngine.buildArguments(
+            for: MediaFile(url: sourceURL, filename: "source.mkv", fileSize: 10_000, containerFormat: "matroska", duration: 10, tracks: [unc10Track]),
+            options: RemuxOptions(targetContainer: .mov, outputURL: movOut)
+        )
+        #expect(unc10MovArgs.contains("v210"))
+        #expect(unc10MovArgs.contains("yuv422p10le"))
+        #expect(unc10MovArgs.contains("+faststart+write_colr"))
+        
+        #expect(RemuxEngine.segmentedChunkContainerExtension(for: unc10Track, targetContainer: .mov) == "mov")
+        #expect(RemuxEngine.segmentedChunkContainerExtension(for: av1CQTrack, targetContainer: .webm) == "webm")
     }
     
     @Test("Extended Media Telemetry Formatting and Technical Summary Generation")

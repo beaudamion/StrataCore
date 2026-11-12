@@ -17,6 +17,7 @@ public struct FFmpegBinaryCapabilities: Equatable, Sendable {
     public let supportsLibVMAF: Bool
     public let supportsDumpExtraBSF: Bool
     public let supportsProResRAWDecode: Bool
+    public let supportsSVTAV1: Bool
     
     public init(
         supportsVideoToolboxVLD: Bool = true,
@@ -34,7 +35,8 @@ public struct FFmpegBinaryCapabilities: Equatable, Sendable {
         supportsXPSNR: Bool = true,
         supportsLibVMAF: Bool = true,
         supportsDumpExtraBSF: Bool = true,
-        supportsProResRAWDecode: Bool = true
+        supportsProResRAWDecode: Bool = true,
+        supportsSVTAV1: Bool = true
     ) {
         self.supportsVideoToolboxVLD = supportsVideoToolboxVLD
         self.h264VTSupportsSpatialAQ = h264VTSupportsSpatialAQ
@@ -52,6 +54,7 @@ public struct FFmpegBinaryCapabilities: Equatable, Sendable {
         self.supportsLibVMAF = supportsLibVMAF
         self.supportsDumpExtraBSF = supportsDumpExtraBSF
         self.supportsProResRAWDecode = supportsProResRAWDecode
+        self.supportsSVTAV1 = supportsSVTAV1
     }
     
     /// Deterministic baseline matching Apple Silicon FFmpeg 9.0.2 with VideoToolbox & AudioToolbox.
@@ -88,7 +91,8 @@ public struct FFmpegBinaryCapabilities: Equatable, Sendable {
             supportsXPSNR: filtersOutput.contains("xpsnr"),
             supportsLibVMAF: filtersOutput.contains("libvmaf"),
             supportsDumpExtraBSF: bsfsOutput.contains("dump_extra"),
-            supportsProResRAWDecode: decodersOutput.contains("prores_raw")
+            supportsProResRAWDecode: decodersOutput.contains("prores_raw"),
+            supportsSVTAV1: encodersOutput.contains("libsvtav1")
         )
     }
 }
