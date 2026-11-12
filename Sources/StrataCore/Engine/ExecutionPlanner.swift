@@ -43,9 +43,74 @@ public struct ExecutionPlan: Equatable, Sendable {
         self.dolbyVisionWarningMessage = dolbyVisionWarningMessage
         self.reasonSummary = reasonSummary
     }
+    
+    public func displayBadgeTitle(showTechnicalDetails: Bool) -> String {
+        if showTechnicalDetails {
+            return badgeTitle
+        }
+        switch badgeTitle {
+        case "Lossless Remux", "Lossless Smart-Cut":
+            return "Lossless Remux"
+        case "Native 2-Pass HW", "Zero-Copy HW":
+            return "Hardware Encoding"
+        case "Hybrid HW + CPU":
+            return "Hybrid Encoding"
+        case "Software libav":
+            return "Software Encoding"
+        case "Audio Transcode + hvc1 Copy", "Video Copy + Audio Encode":
+            return "Audio Convert"
+        default:
+            return badgeTitle
+        }
+    }
+    
+    public func displayReasonSummary(showTechnicalDetails: Bool) -> String {
+        if showTechnicalDetails {
+            return reasonSummary
+        }
+        switch badgeTitle {
+        case "Lossless Remux":
+            return retagsHEVCToHVC1
+                ? "Copies video and audio without re-encoding, formatted for Apple QuickTime playback"
+                : "Copies video and audio without re-encoding for zero quality loss"
+        case "Lossless Smart-Cut":
+            return "Trims and copies video and audio without re-encoding"
+        case "Native 2-Pass HW":
+            return "High-quality two-pass hardware encoding on Apple Silicon"
+        case "Zero-Copy HW":
+            return "Fast GPU-accelerated video encoding on Apple Silicon"
+        case "Hybrid HW + CPU":
+            return "Hardware video encoding paired with CPU format conversion"
+        case "Software libav":
+            return "CPU-based encoding for specialized formats or multi-pass quality"
+        case "Audio Transcode + hvc1 Copy", "Video Copy + Audio Encode":
+            return "Copies video without re-encoding while converting selected audio tracks"
+        default:
+            return reasonSummary
+        }
+    }
 }
 
 public enum ExecutionPlanner {
+    public static func displayTierLabel(_ rawLabel: String, showTechnicalDetails: Bool) -> String {
+        if showTechnicalDetails {
+            return rawLabel
+        }
+        switch rawLabel {
+        case "Zero-Copy HW", "Native 2-Pass HW":
+            return "Hardware Encoding"
+        case "Hybrid HW + CPU":
+            return "Hybrid Encoding"
+        case "Software libav":
+            return "Software Encoding"
+        case "Lossless Smart-Cut":
+            return "Lossless Remux"
+        case "Audio Transcode + hvc1 Copy", "Video Copy + Audio Encode":
+            return "Audio Convert"
+        default:
+            return rawLabel
+        }
+    }
     private static let hwCompatible8Bit420: Set<String> = ["yuv420p", "nv12", "yuvj420p"]
     private static let hwCompatible10Bit: Set<String> = ["p010le", "yuv420p10le", "p210le", "yuv422p10le"]
     private static let avFoundationReadableContainers: Set<String> = ["mp4", "mov", "m4v", "m4a"]

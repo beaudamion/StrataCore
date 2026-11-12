@@ -42,6 +42,28 @@ public enum PerceptualQCMetric: String, Codable, CaseIterable, Identifiable, Sen
         case .libvmaf: return "libvmaf"
         }
     }
+    
+    public func displayName(showTechnicalDetails: Bool) -> String {
+        if showTechnicalDetails {
+            return displayName
+        }
+        switch self {
+        case .none: return "Off"
+        case .xpsnr: return "Fast Quality Score"
+        case .libvmaf: return "Detailed Quality Score"
+        }
+    }
+    
+    public func shortLabel(showTechnicalDetails: Bool) -> String {
+        if showTechnicalDetails {
+            return shortLabel
+        }
+        switch self {
+        case .none: return "Off"
+        case .xpsnr: return "Fast QC"
+        case .libvmaf: return "Detailed QC"
+        }
+    }
 }
 
 public struct RemuxOptions: Codable, Hashable, Sendable {
