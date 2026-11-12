@@ -412,14 +412,32 @@ public enum ExecutionPlanner {
             
             let isTwoPassVideo = (video.action == .transcodeH264_VT || video.action == .transcodeHEVC_VT)
                 && (video.videoConfig.multiPass || video.videoConfig.effectiveRateControlMode == .twoPassVBR)
+            let isSoftwareOnlyAction = video.action == .transcodeAV1
+                || video.action == .transcodeUncompressed8
+                || video.action == .transcodeUncompressed10
             let usesSWCodec = !options.useHardwareAcceleration
                 || isTwoPassVideo
+                || isSoftwareOnlyAction
                 || (video.action == .transcodeHEVC_VT && video.videoConfig.profile?.lowercased() == "main422")
             
             let badge = (usesSWCodec ? "Software libav" : "Hybrid HW + CPU") + audioSuffix
-            let reason = usesSWCodec
-                ? (hasAudioEncode ? "Software libx264/libx265/prores_ks pipeline + Audio encoding" : "Software libx264/libx265/prores_ks pipeline")
-                : (hasAudioEncode ? "Hardware VideoToolbox encoder with CPU pixel/format conversion + Audio encoding" : "Hardware VideoToolbox encoder with CPU pixel/format conversion")
+            let reason: String
+            if usesSWCodec {
+                let pipelineLabel: String
+                switch video.action {
+                case .transcodeAV1:
+                    pipelineLabel = "Software SVT-AV1 (libsvtav1) pipeline"
+                case .transcodeUncompressed8:
+                    pipelineLabel = "Uncompressed 8-Bit 4:2:2 (rawvideo 2vuy) pipeline"
+                case .transcodeUncompressed10:
+                    pipelineLabel = "Uncompressed 10-Bit 4:2:2 (v210) pipeline"
+                default:
+                    pipelineLabel = "Software libx264/libx265/prores_ks pipeline"
+                }
+                reason = hasAudioEncode ? "\(pipelineLabel) + Audio encoding" : pipelineLabel
+            } else {
+                reason = hasAudioEncode ? "Hardware VideoToolbox encoder with CPU pixel/format conversion + Audio encoding" : "Hardware VideoToolbox encoder with CPU pixel/format conversion"
+            }
             return ExecutionPlan(
                 tier: .hybridOrSoftwareLibav,
                 videoKind: usesSWCodec ? .software : .hybrid,

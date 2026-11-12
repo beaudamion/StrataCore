@@ -234,9 +234,18 @@ public actor RemuxEngine {
             args += ["-map_chapters", "-1"]
         }
         
-        // FastStart (moov atom before mdat for instant streaming/seeking)
+        // FastStart (moov atom before mdat) & QuickTime colr atom preservation for uncompressed MOV
+        var movFlags: [String] = []
         if isMP4Like && options.fastStart {
-            args += ["-movflags", "+faststart"]
+            movFlags.append("+faststart")
+        }
+        if options.targetContainer == .mov && activeTracks.contains(where: {
+            $0.mediaType == .video && ($0.action == .transcodeUncompressed8 || $0.action == .transcodeUncompressed10)
+        }) {
+            movFlags.append("+write_colr")
+        }
+        if !movFlags.isEmpty {
+            args += ["-movflags", movFlags.joined()]
         }
         
         // Destination Output File
@@ -318,7 +327,11 @@ public actor RemuxEngine {
         }
         
         if isMP4Like {
-            args += ["-movflags", "+faststart"]
+            var movFlags = "+faststart"
+            if ext == "mov" && (track.action == .transcodeUncompressed8 || track.action == .transcodeUncompressed10) {
+                movFlags += "+write_colr"
+            }
+            args += ["-movflags", movFlags]
         }
         
         args.append(outputURL.path)
@@ -381,6 +394,12 @@ public actor RemuxEngine {
         let clamped = max(1, min(100, qualityScale))
         // Maps 55->25, 65->22, 72->20, 80->17
         return max(14, min(32, Int((43.0 - Double(clamped) * 0.32).rounded())))
+    }
+    
+    private static func mappedSVTAV1CRF(for qualityScale: Int) -> Int {
+        let clamped = max(1, min(100, qualityScale))
+        // Maps 55->34 (Compact), 65->29 (Balanced), 72->26 (High), 80->22 (Master)
+        return max(12, min(52, Int((60.5 - Double(clamped) * 0.48).rounded())))
     }
     
     private static func doubleBitrateBufsize(from bitrate: String) -> String? {
@@ -789,6 +808,84 @@ public actor RemuxEngine {
                 }
             }
             
+        case .transcodeAV1:
+            args += ["-c\(spec)", "libsvtav1"]
+            let svtPreset = max(-2, min(13, cfg.svtPreset ?? 6))
+            args += ["-preset\(spec)", "\(svtPreset)"]
+            
+            let profLower = cfg.profile?.lowercased()
+            let pixFmt: String
+            if profLower == "10bit" {
+                pixFmt = "yuv420p10le"
+            } else if profLower == "8bit" {
+                pixFmt = "yuv420p"
+            } else {
+                let sourceIs10Bit = pfLower.contains("10")
+                pixFmt = sourceIs10Bit ? "yuv420p10le" : "yuv420p"
+            }
+            args += ["-pix_fmt\(spec)", pixFmt]
+            
+            var svtParams: [String] = []
+            if rcMode == .averageBitrate || rcMode == .twoPassVBR {
+                let br = normalizedBitrate(cfg.bitrate) ?? resolvedMultiPassBitrate(for: track)
+                args += ["-b\(spec)", br]
+                svtParams.append("rc=1")
+            } else {
+                args += ["-crf\(spec)", "\(mappedSVTAV1CRF(for: cfg.qualityScale))"]
+                if let maxBr = cfg.maxBitrate.flatMap({ normalizedBitrate($0) }) {
+                    svtParams.append("mbr=\(maxBr)")
+                }
+            }
+            if !svtParams.isEmpty {
+                args += ["-svtav1-params\(spec)", svtParams.joined(separator: ":")]
+            }
+            if let kf = cfg.keyFrameInterval, kf > 0 {
+                args += ["-g\(spec)", "\(kf)"]
+            }
+            if needsDeinterlace {
+                filterParts.append("yadif=0:-1:1")
+            }
+            if let rotCPU = cfg.rotation.cpuFilterExpression {
+                filterParts.append(rotCPU)
+            }
+            if let targetW = cfg.resizeOption.targetWidth {
+                filterParts.append("scale=\(targetW):-2:flags=lanczos")
+            }
+            setparamsParts.append("field_mode=prog")
+            args += ["-field_order\(spec)", "progressive"]
+            
+        case .transcodeUncompressed8, .transcodeUncompressed10:
+            if track.action == .transcodeUncompressed8 {
+                args += ["-c\(spec)", "rawvideo", "-pix_fmt\(spec)", "uyvy422"]
+                if isMP4Like {
+                    args += ["-tag\(spec)", "2vuy"]
+                }
+            } else {
+                args += ["-c\(spec)", "v210", "-pix_fmt\(spec)", "yuv422p10le"]
+            }
+            if needsDeinterlace {
+                filterParts.append("yadif=0:-1:1")
+            }
+            if let rotCPU = cfg.rotation.cpuFilterExpression {
+                filterParts.append(rotCPU)
+            }
+            if let targetW = cfg.resizeOption.targetWidth {
+                filterParts.append("scale=\(targetW):-2:flags=lanczos")
+            }
+            switch cfg.fieldOrder {
+            case .topFirst:
+                args += ["-flags\(spec)", "+ilme+ildct", "-field_order\(spec)", "tt"]
+                setparamsParts.append("field_mode=tff")
+            case .bottomFirst:
+                args += ["-flags\(spec)", "+ilme+ildct", "-field_order\(spec)", "bb"]
+                setparamsParts.append("field_mode=bff")
+            case .progressive:
+                setparamsParts.append("field_mode=prog")
+                args += ["-field_order\(spec)", "progressive"]
+            case .auto, .none:
+                break
+            }
+            
         default:
             return ["-c\(spec)", "copy"]
         }
@@ -1041,7 +1138,13 @@ public actor RemuxEngine {
         if targetContainer == .mkv {
             return "mkv"
         }
-        if targetContainer == .mov || videoTrack.action == .transcodeProRes {
+        if targetContainer == .webm {
+            return "webm"
+        }
+        if targetContainer == .mov
+            || videoTrack.action == .transcodeProRes
+            || videoTrack.action == .transcodeUncompressed8
+            || videoTrack.action == .transcodeUncompressed10 {
             return "mov"
         }
         return "mp4"

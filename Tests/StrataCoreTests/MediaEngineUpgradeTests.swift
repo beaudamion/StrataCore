@@ -54,7 +54,7 @@ struct MediaEngineUpgradeTests {
             pixFmtsOutput: "IO..P videotoolbox_vld  1  1",
             filtersOutput: " ... scale_vt  V->V\n ... transpose_vt V->V\n ... yadif_videotoolbox V->V\n ... loudnorm A->A\n ... xpsnr VV->V\n ... libvmaf VV->V",
             bsfsOutput: "dump_extra\nhevc_mp4toannexb",
-            encodersOutput: " A.... aac_at",
+            encodersOutput: " A.... aac_at\n V.... libsvtav1",
             decodersOutput: " V.... prores_raw",
             h264VTHelp: "  -realtime <boolean>\n  -spatial_aq <int>",
             hevcVTHelp: "  -realtime <boolean>\n  -spatial_aq <int>",
@@ -75,6 +75,7 @@ struct MediaEngineUpgradeTests {
         #expect(parsed.supportsLibVMAF == true)
         #expect(parsed.supportsDumpExtraBSF == true)
         #expect(parsed.supportsProResRAWDecode == true)
+        #expect(parsed.supportsSVTAV1 == true)
         
         if let (ffmpeg, _) = Self.resolveBinaries() {
             let probe = BinaryCapabilityProbe()
@@ -88,6 +89,7 @@ struct MediaEngineUpgradeTests {
             #expect(liveCaps.supportsLibVMAF)
             #expect(liveCaps.supportsDumpExtraBSF)
             #expect(liveCaps.supportsProResRAWDecode)
+            #expect(liveCaps.supportsSVTAV1)
             if ffmpeg.contains("/opt/homebrew/") || ffmpeg.contains("/Resources/bin/") {
                 #expect(liveCaps.supportsYadifVT)
             }
@@ -282,6 +284,26 @@ struct MediaEngineUpgradeTests {
         )
         #expect(planProRes.videoKind == .hybrid)
         #expect(planProRes.displayBadgeTitle(showTechnicalDetails: false) == "Hybrid Encoding")
+        
+        // AV1, Uncompressed 8-Bit 4:2:2, and Uncompressed 10-Bit 4:2:2 route to Software Encoding tier
+        for (action, container, outExt, expectedTechToken) in [
+            (TrackAction.transcodeAV1, ContainerFormat.mp4, "mp4", "SVT-AV1"),
+            (TrackAction.transcodeUncompressed8, ContainerFormat.mov, "mov", "2vuy"),
+            (TrackAction.transcodeUncompressed10, ContainerFormat.mov, "mov", "v210")
+        ] {
+            var swSpecFile = fileVLD
+            swSpecFile.tracks[0].action = action
+            swSpecFile.tracks[0].videoConfig = VideoEncodingConfig.default(for: action)
+            let swPlan = ExecutionPlanner.plan(
+                for: swSpecFile,
+                options: RemuxOptions(targetContainer: container, outputURL: URL(fileURLWithPath: "/tmp/out.\(outExt)"))
+            )
+            #expect(swPlan.tier == .hybridOrSoftwareLibav)
+            #expect(swPlan.videoKind == .software)
+            #expect(swPlan.usesZeroCopyVLD == false)
+            #expect(swPlan.displayBadgeTitle(showTechnicalDetails: false) == "Software Encoding")
+            #expect(swPlan.displayReasonSummary(showTechnicalDetails: true).contains(expectedTechToken))
+        }
         
         #expect(PerceptualQCMetric.xpsnr.displayName(showTechnicalDetails: false) == "Fast Quality Score")
         #expect(PerceptualQCMetric.libvmaf.displayName(showTechnicalDetails: false) == "Detailed Quality Score")

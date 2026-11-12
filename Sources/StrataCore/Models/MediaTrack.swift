@@ -52,6 +52,11 @@ public enum TrackAction: String, Codable, CaseIterable, Identifiable, Sendable {
     case transcodeHEVC_VT = "transcode_hevc_vt"
     case transcodeProRes = "transcode_prores"
     
+    // Video Transcoding (Software / Uncompressed)
+    case transcodeAV1 = "transcode_av1"
+    case transcodeUncompressed8 = "transcode_uncompressed_8"
+    case transcodeUncompressed10 = "transcode_uncompressed_10"
+    
     // Audio Transcoding
     case transcodeAAC_Stereo = "transcode_aac_stereo"
     case transcodeAAC_51 = "transcode_aac_51"
@@ -78,8 +83,14 @@ public enum TrackAction: String, Codable, CaseIterable, Identifiable, Sendable {
             return "H.264"
         case .transcodeHEVC_VT:
             return "HEVC / H.265"
+        case .transcodeAV1:
+            return "AV1"
         case .transcodeProRes:
             return "Apple ProRes"
+        case .transcodeUncompressed8:
+            return "Uncompressed 8-Bit 4:2:2"
+        case .transcodeUncompressed10:
+            return "Uncompressed 10-Bit 4:2:2"
         case .transcodeAAC_Stereo:
             return "AAC Stereo"
         case .transcodeAAC_51:
@@ -110,8 +121,11 @@ public enum TrackAction: String, Codable, CaseIterable, Identifiable, Sendable {
     public static let videoActions: [TrackAction] = [
         .copy,
         .transcodeProRes,
+        .transcodeUncompressed8,
+        .transcodeUncompressed10,
         .transcodeH264_VT,
-        .transcodeHEVC_VT
+        .transcodeHEVC_VT,
+        .transcodeAV1
     ]
     
     public static let audioActions: [TrackAction] = [
@@ -162,7 +176,7 @@ public enum TrackAction: String, Codable, CaseIterable, Identifiable, Sendable {
     
     public var supportsVideoConfig: Bool {
         switch self {
-        case .transcodeH264_VT, .transcodeHEVC_VT, .transcodeProRes:
+        case .transcodeH264_VT, .transcodeHEVC_VT, .transcodeAV1, .transcodeProRes, .transcodeUncompressed8, .transcodeUncompressed10:
             return true
         default:
             return false
@@ -637,6 +651,7 @@ public struct VideoEncodingConfig: Hashable, Codable, Sendable {
     public var deinterlaceMode: VideoDeinterlaceMode // Conditional deinterlacing (.auto / .off / .force)
     public var resizeOption: VideoResizeOption // Optional hardware/software scaling
     public var rotation: VideoRotation // Optional hardware/software rotation & flip
+    public var svtPreset: Int? // Optional SVT-AV1 speed preset (-2...13, default 6)
     
     public init(
         bitrate: String = "auto",
@@ -655,7 +670,8 @@ public struct VideoEncodingConfig: Hashable, Codable, Sendable {
         maxBitrate: String? = nil,
         deinterlaceMode: VideoDeinterlaceMode = .auto,
         resizeOption: VideoResizeOption = .original,
-        rotation: VideoRotation = .none
+        rotation: VideoRotation = .none,
+        svtPreset: Int? = nil
     ) {
         self.bitrate = bitrate
         self.frameRate = frameRate
@@ -688,6 +704,7 @@ public struct VideoEncodingConfig: Hashable, Codable, Sendable {
         self.deinterlaceMode = deinterlaceMode
         self.resizeOption = resizeOption
         self.rotation = rotation
+        self.svtPreset = svtPreset
     }
     
     public var effectiveRateControlMode: VideoRateControlMode {
@@ -761,7 +778,50 @@ public struct VideoEncodingConfig: Hashable, Codable, Sendable {
                 maxBitrate: nil,
                 deinterlaceMode: .auto,
                 resizeOption: .original,
-                rotation: .none
+                rotation: .none,
+                svtPreset: nil
+            )
+        case .transcodeAV1:
+            return VideoEncodingConfig(
+                bitrate: "auto",
+                frameRate: nil,
+                fieldOrder: nil,
+                colorSpace: nil,
+                profile: "auto",
+                entropyMode: nil,
+                keyFrameInterval: nil,
+                allowFrameReordering: true,
+                preserveAlpha: false,
+                multiPass: false,
+                rateControlMode: .constantQuality,
+                qualityScale: VideoQualityPreset.balanced.qualityValue,
+                spatialAQ: false,
+                maxBitrate: nil,
+                deinterlaceMode: .auto,
+                resizeOption: .original,
+                rotation: .none,
+                svtPreset: 6
+            )
+        case .transcodeUncompressed8, .transcodeUncompressed10:
+            return VideoEncodingConfig(
+                bitrate: "auto",
+                frameRate: nil,
+                fieldOrder: nil,
+                colorSpace: nil,
+                profile: nil,
+                entropyMode: nil,
+                keyFrameInterval: nil,
+                allowFrameReordering: true,
+                preserveAlpha: false,
+                multiPass: false,
+                rateControlMode: .constantQuality,
+                qualityScale: VideoQualityPreset.balanced.qualityValue,
+                spatialAQ: false,
+                maxBitrate: nil,
+                deinterlaceMode: .auto,
+                resizeOption: .original,
+                rotation: .none,
+                svtPreset: nil
             )
         default:
             return VideoEncodingConfig()
@@ -778,6 +838,7 @@ public struct VideoEncodingConfig: Hashable, Codable, Sendable {
         
         switch action {
         case .transcodeH264_VT:
+            svtPreset = nil
             let validProfiles = ["auto", "high", "main", "baseline", "constrained_high", "constrained_baseline"]
             if let prof = profile, !validProfiles.contains(prof) {
                 profile = "auto"
@@ -796,6 +857,7 @@ public struct VideoEncodingConfig: Hashable, Codable, Sendable {
             }
             preserveAlpha = false
         case .transcodeHEVC_VT:
+            svtPreset = nil
             let validProfiles = ["auto", "main", "main10", "main422", "main42210"]
             if let prof = profile, !validProfiles.contains(prof) {
                 profile = "auto"
@@ -811,6 +873,7 @@ public struct VideoEncodingConfig: Hashable, Codable, Sendable {
                 preserveAlpha = false
             }
         case .transcodeProRes:
+            svtPreset = nil
             let validProfiles = ["0", "1", "2", "3", "4", "5"]
             if let prof = profile, !validProfiles.contains(prof) {
                 profile = "2"
@@ -827,6 +890,41 @@ public struct VideoEncodingConfig: Hashable, Codable, Sendable {
             if profile != "4" && profile != "5" {
                 preserveAlpha = false
             }
+        case .transcodeAV1:
+            let validProfiles = ["auto", "8bit", "10bit"]
+            if let prof = profile, !validProfiles.contains(prof) {
+                profile = "auto"
+            } else if profile == nil {
+                profile = "auto"
+            }
+            if let preset = svtPreset {
+                svtPreset = max(-2, min(13, preset))
+            } else {
+                svtPreset = 6
+            }
+            entropyMode = nil
+            if fieldOrder == .topFirst || fieldOrder == .bottomFirst {
+                fieldOrder = nil
+            }
+            if rateControlMode == .twoPassVBR || multiPass {
+                rateControlMode = .averageBitrate
+                multiPass = false
+            }
+            spatialAQ = false
+            preserveAlpha = false
+        case .transcodeUncompressed8, .transcodeUncompressed10:
+            profile = nil
+            svtPreset = nil
+            bitrate = "auto"
+            maxBitrate = nil
+            entropyMode = nil
+            keyFrameInterval = nil
+            allowFrameReordering = true
+            preserveAlpha = false
+            multiPass = false
+            rateControlMode = .constantQuality
+            qualityScale = VideoQualityPreset.balanced.qualityValue
+            spatialAQ = false
         default:
             break
         }
@@ -1317,8 +1415,8 @@ public struct MediaTrack: Identifiable, Hashable, Codable, Sendable {
         } else {
             switch action {
             // Video Transcoding
-            case .transcodeProRes: return "mov"
-            case .transcodeH264_VT, .transcodeHEVC_VT: return "mp4"
+            case .transcodeProRes, .transcodeUncompressed8, .transcodeUncompressed10: return "mov"
+            case .transcodeH264_VT, .transcodeHEVC_VT, .transcodeAV1: return "mp4"
             
             // Audio Transcoding
             case .transcodeALAC, .transcodeAAC_Stereo, .transcodeAAC_51: return "m4a"
