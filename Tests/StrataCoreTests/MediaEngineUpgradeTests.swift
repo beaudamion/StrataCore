@@ -213,6 +213,21 @@ struct MediaEngineUpgradeTests {
             options: RemuxOptions(targetContainer: .mp4, outputURL: URL(fileURLWithPath: "/tmp/out.mp4"), allowDolbyVisionReencode: true)
         )
         #expect(allowedPlan.requiresDolbyVisionGuard == false)
+        
+        // Plain-English vs Technical ExecutionPlan display strings & PerceptualQCMetric display labels
+        #expect(planNative.displayBadgeTitle(showTechnicalDetails: false) == "Hardware Encoding")
+        #expect(planNative.displayBadgeTitle(showTechnicalDetails: true) == "Native 2-Pass HW")
+        #expect(!planNative.displayReasonSummary(showTechnicalDetails: false).contains("VideoToolbox"))
+        #expect(planHybrid.displayBadgeTitle(showTechnicalDetails: false) == "Hybrid Encoding")
+        #expect(planHybrid.displayBadgeTitle(showTechnicalDetails: true) == "Hybrid HW + CPU")
+        #expect(planSW.displayBadgeTitle(showTechnicalDetails: false) == "Software Encoding")
+        #expect(planSW.displayBadgeTitle(showTechnicalDetails: true) == "Software libav")
+        #expect(!planSW.displayReasonSummary(showTechnicalDetails: false).contains("libx264"))
+        #expect(PerceptualQCMetric.xpsnr.displayName(showTechnicalDetails: false) == "Fast Quality Score")
+        #expect(PerceptualQCMetric.libvmaf.displayName(showTechnicalDetails: false) == "Detailed Quality Score")
+        #expect(PerceptualQCMetric.xpsnr.displayName(showTechnicalDetails: true).contains("XPSNR"))
+        #expect(PerceptualQCMetric.libvmaf.displayName(showTechnicalDetails: true).contains("libvmaf"))
+        #expect(mp4Source.displayContainerFormat == "MP4 (MPEG-4)")
     }
     
     // MARK: - 3. Rate Control, Zero-Copy VLD Filters, and Smart-Cut Foundations

@@ -97,8 +97,14 @@ public struct HardwareMediaCapabilities: Equatable, Sendable {
     }
     
     public var statusSummary: String {
+        displaySummary(showTechnicalDetails: true)
+    }
+    
+    public func displaySummary(showTechnicalDetails: Bool) -> String {
         guard isAppleSilicon else {
-            return "\(chipName) • Software / Platform VideoToolbox"
+            return showTechnicalDetails
+                ? "\(chipName) • Software / Platform VideoToolbox"
+                : "\(chipName) • Hardware & Software Encoding"
         }
         let aveText = h264HEVCEngineCount == 1
             ? "1 H.264/HEVC (\(openAVEEngines) idle)"
