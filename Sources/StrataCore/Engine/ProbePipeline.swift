@@ -59,12 +59,39 @@ public enum ProbeError: LocalizedError {
 
 private struct FFprobeOutput: Decodable {
     let streams: [FFprobeStream]?
+    let frames: [FFprobeFrame]?
     let format: FFprobeFormat?
     let chapters: [FFprobeChapter]?
 }
 
 private struct FFprobeSideData: Decodable {
     let side_data_type: String?
+    // SMPTE ST 2086 Mastering Display
+    let red_x: String?
+    let red_y: String?
+    let green_x: String?
+    let green_y: String?
+    let blue_x: String?
+    let blue_y: String?
+    let white_point_x: String?
+    let white_point_y: String?
+    let min_luminance: String?
+    let max_luminance: String?
+    // Content Light Level (MaxCLL / MaxFALL)
+    let max_content: Int?
+    let max_average: Int?
+    // Dolby Vision DOVI Configuration Record
+    let dv_profile: Int?
+    let dv_level: Int?
+    let rpu_present_flag: Int?
+    let bl_present_flag: Int?
+    let el_present_flag: Int?
+    let dv_bl_signal_compatibility_id: Int?
+}
+
+private struct FFprobeFrame: Decodable {
+    let stream_index: Int?
+    let side_data_list: [FFprobeSideData]?
 }
 
 private struct FFprobeStream: Decodable {
@@ -79,6 +106,7 @@ private struct FFprobeStream: Decodable {
     let height: Int?
     let r_frame_rate: String?
     let avg_frame_rate: String?
+    let time_base: String?
     let pix_fmt: String?
     let color_space: String?
     let color_primaries: String?
@@ -131,7 +159,7 @@ public final class ProbePipeline {
         "mp4", "m4v", "mov", "mkv", "webm", "avi", "wmv", "flv", "f4v",
         "ts", "mts", "m2ts", "vob", "ogv", "3gp", "3g2", "asf", "rm", "rmvb",
         "divx", "mpg", "mpeg", "m2v", "m4u", "m4p", "dv", "mxf", "nut", "gif",
-        "amv", "y4m",
+        "amv", "y4m", "r3d", "braw", "crm", "ari",
         // Audio containers & streams
         "mp3", "m4a", "aac", "flac", "wav", "aiff", "aif", "ac3", "eac3",
         "ec3", "dts", "dtshd", "dtsma", "truehd", "thd", "opus", "ogg", "oga",
@@ -263,10 +291,46 @@ public final class ProbePipeline {
             throw ProbeError.unsupportedImage(extension: fileURL.pathExtension.uppercased())
         }
         
-        let mediaFile = buildMediaFile(from: probeResult, fileURL: fileURL)
+        var mediaFile = buildMediaFile(from: probeResult, fileURL: fileURL)
         if mediaFile.tracks.isEmpty {
             throw ProbeError.noStreamsFound(fileURL.lastPathComponent)
         }
+        
+        // Conditionally inspect the first video frame for SEI/RPU HDR side data if candidate HDR/DoVi stream lacks it at container level
+        let needsFirstFrameHDRProbe = mediaFile.tracks.contains { tr in
+            guard tr.mediaType == .video else { return false }
+            let isCandidateHDR = tr.isHDRDolbyVision
+                || tr.colorTransfer?.lowercased() == "smpte2084"
+                || tr.colorTransfer?.lowercased() == "arib-std-b67"
+                || tr.colorPrimaries?.lowercased() == "bt2020"
+                || tr.colorSpace?.lowercased().contains("2020") == true
+                || (tr.bitDepth ?? 8) >= 10
+            let missingHDRSideData = (tr.masteringDisplay == nil || tr.contentLightLevel == nil || (tr.isHDRDolbyVision && tr.dolbyVision == nil))
+            return isCandidateHDR && missingHDRSideData
+        }
+        if needsFirstFrameHDRProbe,
+           let frameSideData = await probeFirstVideoFrameSideData(fileURL: fileURL, ffprobePath: ffprobePath) {
+            for idx in mediaFile.tracks.indices where mediaFile.tracks[idx].mediaType == .video {
+                let sIdx = mediaFile.tracks[idx].streamIndex
+                let items = frameSideData[sIdx] ?? frameSideData[-1] ?? []
+                if !items.isEmpty {
+                    let parsed = Self.extractHDRAndDolbyVision(from: items)
+                    if mediaFile.tracks[idx].masteringDisplay == nil {
+                        mediaFile.tracks[idx].masteringDisplay = parsed.masteringDisplay
+                    }
+                    if mediaFile.tracks[idx].contentLightLevel == nil {
+                        mediaFile.tracks[idx].contentLightLevel = parsed.contentLightLevel
+                    }
+                    if mediaFile.tracks[idx].dolbyVision == nil {
+                        mediaFile.tracks[idx].dolbyVision = parsed.dolbyVision
+                    }
+                    if parsed.isDolbyVision {
+                        mediaFile.tracks[idx].isHDRDolbyVision = true
+                    }
+                }
+            }
+        }
+        
         return mediaFile
     }
     
@@ -450,10 +514,7 @@ public final class ProbePipeline {
                     mediaType: mType
                 )
                 
-                let isDoVi = stream.side_data_list?.contains { sd in
-                    let t = sd.side_data_type?.lowercased() ?? ""
-                    return t.contains("dovi") || t.contains("dolby vision")
-                } ?? false
+                let parsedSideData = Self.extractHDRAndDolbyVision(from: stream.side_data_list ?? [])
                 
                 let track = MediaTrack(
                     streamIndex: stream.index,
@@ -479,7 +540,7 @@ public final class ProbePipeline {
                     bitDepth: parsedBitDepth,
                     hasBFrames: stream.has_b_frames,
                     frameCount: stream.nb_frames.flatMap { Int($0) },
-                    isHDRDolbyVision: isDoVi,
+                    isHDRDolbyVision: parsedSideData.isDolbyVision,
                     channels: stream.channels,
                     channelLayout: stream.channel_layout,
                     sampleRate: stream.sample_rate,
@@ -494,7 +555,11 @@ public final class ProbePipeline {
                     isSelected: (mType == .video || mType == .audio || mType == .subtitle),
                     action: .copy,
                     isExternal: false,
-                    externalURL: nil
+                    externalURL: nil,
+                    timeBase: stream.time_base,
+                    masteringDisplay: parsedSideData.masteringDisplay,
+                    contentLightLevel: parsedSideData.contentLightLevel,
+                    dolbyVision: parsedSideData.dolbyVision
                 )
                 tracks.append(track)
             }
@@ -594,5 +659,127 @@ public final class ProbePipeline {
             return String(format: "%.2f fps", val)
         }
         return rate
+    }
+    
+    private func probeFirstVideoFrameSideData(fileURL: URL, ffprobePath: String) async -> [Int: [FFprobeSideData]]? {
+        let arguments = [
+            "-v", "error",
+            "-select_streams", "v",
+            "-read_intervals", "%+#1",
+            "-show_frames",
+            "-print_format", "json",
+            fileURL.path
+        ]
+        
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: ffprobePath)
+        process.arguments = arguments
+        
+        let stdoutPipe = Pipe()
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = stdoutPipe
+        process.standardError = FileHandle.nullDevice
+        
+        let (terminationStream, terminationContinuation) = AsyncStream<Int32>.makeStream()
+        process.terminationHandler = { terminated in
+            terminated.terminationHandler = nil
+            terminationContinuation.yield(terminated.terminationStatus)
+            terminationContinuation.finish()
+        }
+        
+        do {
+            try process.run()
+        } catch {
+            process.terminationHandler = nil
+            terminationContinuation.finish()
+            return nil
+        }
+        
+        let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        var exitCode: Int32 = -1
+        for await status in terminationStream {
+            exitCode = status
+            break
+        }
+        process.terminationHandler = nil
+        guard exitCode == 0,
+              let parsed = try? Self.jsonDecoder.decode(FFprobeOutput.self, from: data),
+              let frames = parsed.frames else {
+            return nil
+        }
+        
+        var grouped: [Int: [FFprobeSideData]] = [:]
+        for frame in frames {
+            if let sideData = frame.side_data_list, !sideData.isEmpty {
+                let key = frame.stream_index ?? -1
+                grouped[key, default: []].append(contentsOf: sideData)
+            }
+        }
+        return grouped
+    }
+    
+    private static func extractHDRAndDolbyVision(from sideDataList: [FFprobeSideData]) -> (
+        isDolbyVision: Bool,
+        masteringDisplay: HDRMasteringDisplay?,
+        contentLightLevel: HDRContentLightLevel?,
+        dolbyVision: DolbyVisionInfo?
+    ) {
+        var isDolbyVision = false
+        var mastering: HDRMasteringDisplay?
+        var contentLight: HDRContentLightLevel?
+        var dolbyInfo: DolbyVisionInfo?
+        
+        for sd in sideDataList {
+            let t = sd.side_data_type?.lowercased() ?? ""
+            if t.contains("dovi") || t.contains("dolby vision") {
+                isDolbyVision = true
+                if sd.dv_profile != nil || sd.rpu_present_flag != nil || t.contains("configuration record") {
+                    dolbyInfo = DolbyVisionInfo(
+                        profile: sd.dv_profile,
+                        level: sd.dv_level,
+                        rpuPresent: (sd.rpu_present_flag ?? 1) != 0,
+                        blPresent: (sd.bl_present_flag ?? 1) != 0,
+                        elPresent: (sd.el_present_flag ?? 0) != 0,
+                        blSignalCompatibilityID: sd.dv_bl_signal_compatibility_id
+                    )
+                }
+            } else if t.contains("mastering display") {
+                let candidate = HDRMasteringDisplay(
+                    redX: parseRationalOrDouble(sd.red_x),
+                    redY: parseRationalOrDouble(sd.red_y),
+                    greenX: parseRationalOrDouble(sd.green_x),
+                    greenY: parseRationalOrDouble(sd.green_y),
+                    blueX: parseRationalOrDouble(sd.blue_x),
+                    blueY: parseRationalOrDouble(sd.blue_y),
+                    whitePointX: parseRationalOrDouble(sd.white_point_x),
+                    whitePointY: parseRationalOrDouble(sd.white_point_y),
+                    minLuminance: parseRationalOrDouble(sd.min_luminance),
+                    maxLuminance: parseRationalOrDouble(sd.max_luminance)
+                )
+                if candidate.hasPrimaries || candidate.hasLuminance {
+                    mastering = candidate
+                }
+            } else if t.contains("content light level") {
+                if let maxC = sd.max_content {
+                    contentLight = HDRContentLightLevel(maxCLL: maxC, maxFALL: sd.max_average ?? 0)
+                }
+            }
+        }
+        
+        return (isDolbyVision, mastering, contentLight, dolbyInfo)
+    }
+    
+    private static func parseRationalOrDouble(_ raw: String?) -> Double? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let parts = trimmed.components(separatedBy: "/")
+        if parts.count == 2,
+           let num = Double(parts[0]),
+           let den = Double(parts[1]),
+           den != 0 {
+            return num / den
+        }
+        return Double(trimmed)
     }
 }

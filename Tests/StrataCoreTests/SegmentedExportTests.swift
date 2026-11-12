@@ -264,7 +264,8 @@ struct SegmentedExportTests {
             sidecarOutputURL: URL(fileURLWithPath: "/tmp/sidecar.mp4")
         )
         #expect(sidecarArgs.contains("-vn"))
-        #expect(sidecarArgs.contains("aac"))
+        #expect(sidecarArgs.contains("aac_at"))
+        #expect(sidecarArgs.contains("-aac_at_mode:a:0"))
         
         let stitchArgs = try RemuxEngine.buildSegmentedStitchArguments(
             for: file,

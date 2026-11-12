@@ -212,8 +212,8 @@ public enum HardwareCapabilities {
     }
     
     /// Async helper that incorporates Strata's own active HardwareSessionCoordinator reservations.
-    public static func detectWithCoordinator() async -> HardwareMediaCapabilities {
-        let internalCounts = await HardwareSessionCoordinator.shared.activeCounts()
+    public static func detectWithCoordinator(_ coordinator: HardwareSessionCoordinator = .shared) async -> HardwareMediaCapabilities {
+        let internalCounts = await coordinator.activeCounts()
         return detect(internalActiveAVE: internalCounts.ave, internalActiveProRes: internalCounts.proRes)
     }
     
@@ -261,14 +261,14 @@ public enum HardwareCapabilities {
         let codecLabel: String
         switch video.action {
         case .transcodeH264_VT:
-            if video.videoConfig.multiPass {
+            if video.videoConfig.multiPass || video.videoConfig.effectiveRateControlMode == .twoPassVBR {
                 return SegmentationDecision(segmentCount: 1, notice: nil, engineFamily: nil)
             }
             family = .ave
             codecLabel = "H.264"
         case .transcodeHEVC_VT:
             let profile = video.videoConfig.profile?.lowercased()
-            if video.videoConfig.multiPass || profile == "main422" {
+            if video.videoConfig.multiPass || video.videoConfig.effectiveRateControlMode == .twoPassVBR || profile == "main422" {
                 return SegmentationDecision(segmentCount: 1, notice: nil, engineFamily: nil)
             }
             family = .ave

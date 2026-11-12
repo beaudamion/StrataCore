@@ -264,6 +264,361 @@ public enum VideoFieldOrder: String, Codable, CaseIterable, Identifiable, Sendab
     }
 }
 
+public enum VideoRateControlMode: String, Codable, CaseIterable, Identifiable, Sendable {
+    case constantQuality = "constant_quality"
+    case averageBitrate = "average_bitrate"
+    case twoPassVBR = "two_pass_vbr"
+    
+    public var id: String { rawValue }
+    
+    public var displayName: String {
+        switch self {
+        case .constantQuality: return "Constant Quality"
+        case .averageBitrate: return "Average Bitrate"
+        case .twoPassVBR: return "2-Pass VBR"
+        }
+    }
+}
+
+public enum VideoQualityPreset: String, CaseIterable, Identifiable, Sendable {
+    case compact = "compact"
+    case balanced = "balanced"
+    case high = "high"
+    case master = "master"
+    
+    public var id: String { rawValue }
+    
+    public var qualityValue: Int {
+        switch self {
+        case .compact: return 55
+        case .balanced: return 65
+        case .high: return 72
+        case .master: return 80
+        }
+    }
+    
+    public var displayName: String {
+        switch self {
+        case .compact: return "Compact (55)"
+        case .balanced: return "Balanced (65)"
+        case .high: return "High (72)"
+        case .master: return "Master (80)"
+        }
+    }
+    
+    public static func matching(quality: Int) -> VideoQualityPreset? {
+        allCases.first { $0.qualityValue == quality }
+    }
+}
+
+public enum VideoDeinterlaceMode: String, Codable, CaseIterable, Identifiable, Sendable {
+    case auto = "auto"
+    case off = "off"
+    case force = "force"
+    
+    public var id: String { rawValue }
+    
+    public var displayName: String {
+        switch self {
+        case .auto: return "Auto (If Interlaced)"
+        case .off: return "Off"
+        case .force: return "Force Deinterlace"
+        }
+    }
+}
+
+public enum VideoResizeOption: String, Codable, CaseIterable, Identifiable, Sendable {
+    case original = "original"
+    case uhd4K = "3840"
+    case qhd1440 = "2560"
+    case fhd1080 = "1920"
+    case hd720 = "1280"
+    
+    public var id: String { rawValue }
+    
+    public var displayName: String {
+        switch self {
+        case .original: return "Original Size"
+        case .uhd4K: return "4K UHD (3840w)"
+        case .qhd1440: return "1440p QHD (2560w)"
+        case .fhd1080: return "1080p HD (1920w)"
+        case .hd720: return "720p HD (1280w)"
+        }
+    }
+    
+    public var targetWidth: Int? {
+        switch self {
+        case .original: return nil
+        case .uhd4K: return 3840
+        case .qhd1440: return 2560
+        case .fhd1080: return 1920
+        case .hd720: return 1280
+        }
+    }
+}
+
+public enum VideoRotation: String, Codable, CaseIterable, Identifiable, Sendable {
+    case none = "none"
+    case clockwise90 = "clock"
+    case counterClockwise90 = "cclock"
+    case rotate180 = "reversal"
+    case flipHorizontal = "hflip"
+    case flipVertical = "vflip"
+    
+    public var id: String { rawValue }
+    
+    public var displayName: String {
+        switch self {
+        case .none: return "None"
+        case .clockwise90: return "90° Clockwise"
+        case .counterClockwise90: return "90° Counter-CW"
+        case .rotate180: return "180° Rotate"
+        case .flipHorizontal: return "Flip Horizontal"
+        case .flipVertical: return "Flip Vertical"
+        }
+    }
+    
+    public var transposeVTDir: String? {
+        self == .none ? nil : rawValue
+    }
+    
+    public var cpuFilterExpression: String? {
+        switch self {
+        case .none: return nil
+        case .clockwise90: return "transpose=1"
+        case .counterClockwise90: return "transpose=2"
+        case .rotate180: return "transpose=2,transpose=2"
+        case .flipHorizontal: return "hflip"
+        case .flipVertical: return "vflip"
+        }
+    }
+}
+
+public enum AudioAACEncodingMode: String, Codable, CaseIterable, Identifiable, Sendable {
+    case vbrQuality = "vbr"
+    case cbr = "cbr"
+    case abr = "abr"
+    case cvbr = "cvbr"
+    
+    public var id: String { rawValue }
+    
+    public var displayName: String {
+        switch self {
+        case .vbrQuality: return "True VBR Quality"
+        case .cbr: return "CBR (Constant)"
+        case .abr: return "ABR (Average)"
+        case .cvbr: return "CVBR (Constrained)"
+        }
+    }
+}
+
+public enum AudioLoudnessTarget: String, Codable, CaseIterable, Identifiable, Sendable {
+    case off = "off"
+    case streaming14 = "lufs_14"
+    case podcast16 = "lufs_16"
+    case broadcast23 = "lufs_23"
+    
+    public var id: String { rawValue }
+    
+    public var displayName: String {
+        switch self {
+        case .off: return "Off"
+        case .streaming14: return "-14 LUFS (Streaming)"
+        case .podcast16: return "-16 LUFS (Apple/Podcast)"
+        case .broadcast23: return "-23 LUFS (EBU R128)"
+        }
+    }
+    
+    public var shortLabel: String {
+        switch self {
+        case .off: return "Off"
+        case .streaming14: return "-14 LUFS"
+        case .podcast16: return "-16 LUFS"
+        case .broadcast23: return "-23 LUFS"
+        }
+    }
+    
+    public var integratedLUFS: Double? {
+        switch self {
+        case .off: return nil
+        case .streaming14: return -14.0
+        case .podcast16: return -16.0
+        case .broadcast23: return -23.0
+        }
+    }
+    
+    public var truePeakDBTP: Double {
+        switch self {
+        case .off: return -1.5
+        case .streaming14: return -1.0
+        case .podcast16: return -1.5
+        case .broadcast23: return -2.0
+        }
+    }
+    
+    public var lraTarget: Double {
+        switch self {
+        case .broadcast23: return 7.0
+        default: return 11.0
+        }
+    }
+}
+
+public struct HDRMasteringDisplay: Hashable, Codable, Sendable {
+    public var redX: Double?
+    public var redY: Double?
+    public var greenX: Double?
+    public var greenY: Double?
+    public var blueX: Double?
+    public var blueY: Double?
+    public var whitePointX: Double?
+    public var whitePointY: Double?
+    public var minLuminance: Double?
+    public var maxLuminance: Double?
+    
+    public init(
+        redX: Double? = nil,
+        redY: Double? = nil,
+        greenX: Double? = nil,
+        greenY: Double? = nil,
+        blueX: Double? = nil,
+        blueY: Double? = nil,
+        whitePointX: Double? = nil,
+        whitePointY: Double? = nil,
+        minLuminance: Double? = nil,
+        maxLuminance: Double? = nil
+    ) {
+        self.redX = redX
+        self.redY = redY
+        self.greenX = greenX
+        self.greenY = greenY
+        self.blueX = blueX
+        self.blueY = blueY
+        self.whitePointX = whitePointX
+        self.whitePointY = whitePointY
+        self.minLuminance = minLuminance
+        self.maxLuminance = maxLuminance
+    }
+    
+    public var hasPrimaries: Bool {
+        redX != nil && redY != nil && greenX != nil && greenY != nil && blueX != nil && blueY != nil && whitePointX != nil && whitePointY != nil
+    }
+    
+    public var hasLuminance: Bool {
+        maxLuminance != nil && minLuminance != nil
+    }
+    
+    public var formattedSummary: String? {
+        var parts: [String] = []
+        if let rx = redX, let gx = greenX {
+            if abs(rx - 0.680) < 0.02 && abs(gx - 0.265) < 0.02 {
+                parts.append("Display P3")
+            } else if abs(rx - 0.708) < 0.02 && abs(gx - 0.170) < 0.02 {
+                parts.append("BT.2020")
+            } else {
+                parts.append(String(format: "RGB(%.3f,%.3f)", rx, redY ?? 0))
+            }
+        }
+        if let maxL = maxLuminance {
+            if let minL = minLuminance {
+                parts.append(String(format: "%.4g–%.0f cd/m²", minL, maxL))
+            } else {
+                parts.append(String(format: "%.0f cd/m²", maxL))
+            }
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " • ")
+    }
+    
+    /// Formats x265 `master-display` parameter string (`G(...)B(...)R(...)WP(...)L(max,min)`).
+    public var x265MasterDisplayParameter: String? {
+        guard let gx = greenX, let gy = greenY,
+              let bx = blueX, let by = blueY,
+              let rx = redX, let ry = redY,
+              let wx = whitePointX, let wy = whitePointY,
+              let maxL = maxLuminance, let minL = minLuminance else {
+            return nil
+        }
+        let s = 50000.0
+        let ls = 10000.0
+        return String(
+            format: "G(%.0f,%.0f)B(%.0f,%.0f)R(%.0f,%.0f)WP(%.0f,%.0f)L(%.0f,%.0f)",
+            (gx * s).rounded(), (gy * s).rounded(),
+            (bx * s).rounded(), (by * s).rounded(),
+            (rx * s).rounded(), (ry * s).rounded(),
+            (wx * s).rounded(), (wy * s).rounded(),
+            (maxL * ls).rounded(), max(1.0, (minL * ls).rounded())
+        )
+    }
+}
+
+public struct HDRContentLightLevel: Hashable, Codable, Sendable {
+    public var maxCLL: Int
+    public var maxFALL: Int
+    
+    public init(maxCLL: Int, maxFALL: Int) {
+        self.maxCLL = max(0, maxCLL)
+        self.maxFALL = max(0, maxFALL)
+    }
+    
+    public var formattedSummary: String {
+        "\(maxCLL) / \(maxFALL) nits"
+    }
+    
+    public var x265MaxCLLParameter: String {
+        "\(maxCLL),\(maxFALL)"
+    }
+}
+
+public struct DolbyVisionInfo: Hashable, Codable, Sendable {
+    public var profile: Int?
+    public var level: Int?
+    public var rpuPresent: Bool
+    public var blPresent: Bool
+    public var elPresent: Bool
+    public var blSignalCompatibilityID: Int?
+    
+    public init(
+        profile: Int? = nil,
+        level: Int? = nil,
+        rpuPresent: Bool = true,
+        blPresent: Bool = true,
+        elPresent: Bool = false,
+        blSignalCompatibilityID: Int? = nil
+    ) {
+        self.profile = profile
+        self.level = level
+        self.rpuPresent = rpuPresent
+        self.blPresent = blPresent
+        self.elPresent = elPresent
+        self.blSignalCompatibilityID = blSignalCompatibilityID
+    }
+    
+    public var formattedSummary: String {
+        var parts: [String] = []
+        if let profile {
+            if let compat = blSignalCompatibilityID {
+                parts.append("Profile \(profile).\(compat)")
+            } else {
+                parts.append("Profile \(profile)")
+            }
+        } else {
+            parts.append("Dolby Vision")
+        }
+        var layers: [String] = []
+        if blPresent { layers.append("BL") }
+        if elPresent { layers.append("EL") }
+        if rpuPresent { layers.append("RPU") }
+        if !layers.isEmpty {
+            parts.append(layers.joined(separator: "+"))
+        }
+        return parts.joined(separator: " • ")
+    }
+    
+    public var isProfileFiveToneShifted: Bool {
+        profile == 5
+    }
+}
+
 public struct VideoEncodingConfig: Hashable, Codable, Sendable {
     public var bitrate: String // "auto" or kbps string like "15000k"
     public var frameRate: String? // "24000/1001", "24", "25", "30000/1001", "30", "50", "60000/1001", "60", or nil for Auto
@@ -275,6 +630,13 @@ public struct VideoEncodingConfig: Hashable, Codable, Sendable {
     public var allowFrameReordering: Bool // B-frames / frame reordering (H.264 non-Baseline & HEVC)
     public var preserveAlpha: Bool // Preserve alpha channel (ProRes 4444/XQ & HEVC 8-bit 4:2:0)
     public var multiPass: Bool // H.264 / HEVC 2-pass encoding
+    public var rateControlMode: VideoRateControlMode
+    public var qualityScale: Int // 1...100 calibrated VideoToolbox quality (default 65 Balanced)
+    public var spatialAQ: Bool // Hardware Spatial Adaptive QP (-spatial_aq 1 / kVTCompressionPropertyKey_SpatialAdaptiveQPLevel)
+    public var maxBitrate: String? // Optional VBV / DataRateLimits peak ceiling (e.g. "20000k")
+    public var deinterlaceMode: VideoDeinterlaceMode // Conditional deinterlacing (.auto / .off / .force)
+    public var resizeOption: VideoResizeOption // Optional hardware/software scaling
+    public var rotation: VideoRotation // Optional hardware/software rotation & flip
     
     public init(
         bitrate: String = "auto",
@@ -286,7 +648,14 @@ public struct VideoEncodingConfig: Hashable, Codable, Sendable {
         keyFrameInterval: Int? = nil,
         allowFrameReordering: Bool = true,
         preserveAlpha: Bool = false,
-        multiPass: Bool = false
+        multiPass: Bool = false,
+        rateControlMode: VideoRateControlMode? = nil,
+        qualityScale: Int = VideoQualityPreset.balanced.qualityValue,
+        spatialAQ: Bool = true,
+        maxBitrate: String? = nil,
+        deinterlaceMode: VideoDeinterlaceMode = .auto,
+        resizeOption: VideoResizeOption = .original,
+        rotation: VideoRotation = .none
     ) {
         self.bitrate = bitrate
         self.frameRate = frameRate
@@ -297,7 +666,39 @@ public struct VideoEncodingConfig: Hashable, Codable, Sendable {
         self.keyFrameInterval = keyFrameInterval
         self.allowFrameReordering = allowFrameReordering
         self.preserveAlpha = preserveAlpha
-        self.multiPass = multiPass
+        
+        let trimmedBitrate = bitrate.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let hasExplicitBitrate = !trimmedBitrate.isEmpty && trimmedBitrate != "auto"
+        let resolvedRateControl: VideoRateControlMode
+        if let rc = rateControlMode {
+            resolvedRateControl = rc
+        } else if multiPass {
+            resolvedRateControl = .twoPassVBR
+        } else if hasExplicitBitrate {
+            resolvedRateControl = .averageBitrate
+        } else {
+            resolvedRateControl = .constantQuality
+        }
+        
+        self.rateControlMode = resolvedRateControl
+        self.multiPass = multiPass || (resolvedRateControl == .twoPassVBR)
+        self.qualityScale = max(1, min(100, qualityScale))
+        self.spatialAQ = spatialAQ
+        self.maxBitrate = maxBitrate
+        self.deinterlaceMode = deinterlaceMode
+        self.resizeOption = resizeOption
+        self.rotation = rotation
+    }
+    
+    public var effectiveRateControlMode: VideoRateControlMode {
+        if multiPass || rateControlMode == .twoPassVBR {
+            return .twoPassVBR
+        }
+        let trimmed = bitrate.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if rateControlMode == .averageBitrate || (!trimmed.isEmpty && trimmed != "auto") {
+            return .averageBitrate
+        }
+        return .constantQuality
     }
     
     public static func `default`(for action: TrackAction) -> VideoEncodingConfig {
@@ -313,7 +714,14 @@ public struct VideoEncodingConfig: Hashable, Codable, Sendable {
                 keyFrameInterval: nil,
                 allowFrameReordering: true,
                 preserveAlpha: false,
-                multiPass: false
+                multiPass: false,
+                rateControlMode: .constantQuality,
+                qualityScale: VideoQualityPreset.balanced.qualityValue,
+                spatialAQ: true,
+                maxBitrate: nil,
+                deinterlaceMode: .auto,
+                resizeOption: .original,
+                rotation: .none
             )
         case .transcodeHEVC_VT:
             return VideoEncodingConfig(
@@ -326,7 +734,14 @@ public struct VideoEncodingConfig: Hashable, Codable, Sendable {
                 keyFrameInterval: nil,
                 allowFrameReordering: true,
                 preserveAlpha: false,
-                multiPass: false
+                multiPass: false,
+                rateControlMode: .constantQuality,
+                qualityScale: VideoQualityPreset.balanced.qualityValue,
+                spatialAQ: true,
+                maxBitrate: nil,
+                deinterlaceMode: .auto,
+                resizeOption: .original,
+                rotation: .none
             )
         case .transcodeProRes:
             return VideoEncodingConfig(
@@ -339,7 +754,14 @@ public struct VideoEncodingConfig: Hashable, Codable, Sendable {
                 keyFrameInterval: nil,
                 allowFrameReordering: true,
                 preserveAlpha: false,
-                multiPass: false
+                multiPass: false,
+                rateControlMode: .constantQuality,
+                qualityScale: VideoQualityPreset.balanced.qualityValue,
+                spatialAQ: false,
+                maxBitrate: nil,
+                deinterlaceMode: .auto,
+                resizeOption: .original,
+                rotation: .none
             )
         default:
             return VideoEncodingConfig()
@@ -347,6 +769,13 @@ public struct VideoEncodingConfig: Hashable, Codable, Sendable {
     }
     
     public mutating func sanitize(for action: TrackAction) {
+        qualityScale = max(1, min(100, qualityScale))
+        if rateControlMode == .twoPassVBR {
+            multiPass = true
+        } else if multiPass {
+            rateControlMode = .twoPassVBR
+        }
+        
         switch action {
         case .transcodeH264_VT:
             let validProfiles = ["auto", "high", "main", "baseline", "constrained_high", "constrained_baseline"]
@@ -389,9 +818,12 @@ public struct VideoEncodingConfig: Hashable, Codable, Sendable {
                 profile = "2"
             }
             bitrate = "auto"
+            maxBitrate = nil
             entropyMode = nil
             keyFrameInterval = nil
             multiPass = false
+            rateControlMode = .constantQuality
+            spatialAQ = false
             if profile != "4" && profile != "5" {
                 preserveAlpha = false
             }
@@ -407,19 +839,28 @@ public struct AudioEncodingConfig: Hashable, Codable, Sendable {
     public var channels: Int? // 1, 2, 6, or nil for Auto
     public var bitDepth: String? // "16", "24" for ALAC/FLAC
     public var isVBR: Bool
+    public var aacMode: AudioAACEncodingMode // AudioToolbox aac_at mode (.vbrQuality / .cbr / .abr / .cvbr)
+    public var aacQuality: Int // 0...14 for AudioToolbox VBR (default 2, lower = higher quality)
+    public var loudnessTarget: AudioLoudnessTarget // Optional 2-pass EBU R128 loudness normalization
     
     public init(
         bitrate: String = "192k",
         sampleRate: String? = nil,
         channels: Int? = nil,
         bitDepth: String? = nil,
-        isVBR: Bool = false
+        isVBR: Bool = false,
+        aacMode: AudioAACEncodingMode? = nil,
+        aacQuality: Int = 2,
+        loudnessTarget: AudioLoudnessTarget = .off
     ) {
         self.bitrate = bitrate
         self.sampleRate = sampleRate
         self.channels = channels
         self.bitDepth = bitDepth
         self.isVBR = isVBR
+        self.aacMode = aacMode ?? (isVBR ? .vbrQuality : .cbr)
+        self.aacQuality = max(0, min(14, aacQuality))
+        self.loudnessTarget = loudnessTarget
     }
     
     public static func `default`(for action: TrackAction) -> AudioEncodingConfig {
@@ -429,9 +870,9 @@ public struct AudioEncodingConfig: Hashable, Codable, Sendable {
         case .transcodeALAC:
             return AudioEncodingConfig(bitrate: "Lossless", bitDepth: nil)
         case .transcodeAAC_Stereo:
-            return AudioEncodingConfig(bitrate: "192k", channels: 2)
+            return AudioEncodingConfig(bitrate: "192k", channels: 2, isVBR: true, aacMode: .vbrQuality, aacQuality: 2)
         case .transcodeAAC_51:
-            return AudioEncodingConfig(bitrate: "384k", channels: 6)
+            return AudioEncodingConfig(bitrate: "384k", channels: 6, isVBR: true, aacMode: .vbrQuality, aacQuality: 2)
         case .transcodeAC3_51:
             return AudioEncodingConfig(bitrate: "640k", channels: 6)
         case .transcodeEAC3_51:
@@ -476,6 +917,10 @@ public struct MediaTrack: Identifiable, Hashable, Codable, Sendable {
     public var hasBFrames: Int?
     public var frameCount: Int?
     public var isHDRDolbyVision: Bool
+    public var timeBase: String?
+    public var masteringDisplay: HDRMasteringDisplay?
+    public var contentLightLevel: HDRContentLightLevel?
+    public var dolbyVision: DolbyVisionInfo?
     
     // Audio specific
     public var channels: Int?
@@ -546,7 +991,11 @@ public struct MediaTrack: Identifiable, Hashable, Codable, Sendable {
         audioConfig: AudioEncodingConfig? = nil,
         videoConfig: VideoEncodingConfig? = nil,
         isExternal: Bool = false,
-        externalURL: URL? = nil
+        externalURL: URL? = nil,
+        timeBase: String? = nil,
+        masteringDisplay: HDRMasteringDisplay? = nil,
+        contentLightLevel: HDRContentLightLevel? = nil,
+        dolbyVision: DolbyVisionInfo? = nil
     ) {
         self.id = id
         self.streamIndex = streamIndex
@@ -573,6 +1022,10 @@ public struct MediaTrack: Identifiable, Hashable, Codable, Sendable {
         self.hasBFrames = hasBFrames
         self.frameCount = frameCount
         self.isHDRDolbyVision = isHDRDolbyVision
+        self.timeBase = timeBase
+        self.masteringDisplay = masteringDisplay
+        self.contentLightLevel = contentLightLevel
+        self.dolbyVision = dolbyVision
         self.channels = channels
         self.channelLayout = channelLayout
         self.sampleRate = sampleRate
@@ -785,6 +1238,43 @@ public struct MediaTrack: Identifiable, Hashable, Codable, Sendable {
     public var isVariableFrameRate: Bool? {
         guard let avg = frameRate, let real = rFrameRate, !avg.isEmpty, !real.isEmpty else { return nil }
         return avg != real
+    }
+    
+    public var isInterlacedSource: Bool {
+        guard let fo = fieldOrder?.lowercased() else { return false }
+        return fo == "tt" || fo == "bb" || fo == "tb" || fo == "bt"
+    }
+    
+    public var isHEVCCodec: Bool {
+        let lower = codecName.lowercased()
+        return lower == "hevc" || lower == "h265" || lower == "hev1" || lower == "hvc1"
+    }
+    
+    public var hasHEV1Tag: Bool {
+        codecTag?.lowercased() == "hev1"
+    }
+    
+    public var formattedMasteringDisplay: String? {
+        masteringDisplay?.formattedSummary
+    }
+    
+    public var formattedContentLightLevel: String? {
+        contentLightLevel?.formattedSummary
+    }
+    
+    public var formattedDolbyVision: String? {
+        if let dolbyVision {
+            return dolbyVision.formattedSummary
+        }
+        return isHDRDolbyVision ? "Dolby Vision RPU Detected" : nil
+    }
+    
+    public var requiresDolbyVisionToneGuard: Bool {
+        guard mediaType == .video && (isHDRDolbyVision || dolbyVision != nil) else { return false }
+        if let profile = dolbyVision?.profile {
+            return profile == 5 || (profile == 8 && (dolbyVision?.rpuPresent ?? true))
+        }
+        return true
     }
     
     private func tagValue(forKeyCaseInsensitive target: String) -> String? {

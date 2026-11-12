@@ -269,6 +269,18 @@ public struct MediaFile: Identifiable, Hashable, Codable, Sendable {
             if let bf = tr.hasBFrames {
                 lines.append("  B-Frames: \(bf > 0 ? "\(bf) reorder" : "None (0)")")
             }
+            if let tb = tr.timeBase, !tb.isEmpty {
+                lines.append("  Timebase: \(tb)")
+            }
+            if let md = tr.formattedMasteringDisplay {
+                lines.append("  HDR10 Mastering: \(md)")
+            }
+            if let cll = tr.formattedContentLightLevel {
+                lines.append("  MaxCLL / MaxFALL: \(cll)")
+            }
+            if let dv = tr.formattedDolbyVision {
+                lines.append("  Dolby Vision: \(dv)")
+            }
             if let fc = tr.frameCount, fc > 0 {
                 let grouped = numberFormatter.string(from: NSNumber(value: fc)) ?? "\(fc)"
                 lines.append("  Frame Count: \(grouped)")
