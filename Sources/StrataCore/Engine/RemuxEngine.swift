@@ -361,17 +361,17 @@ public actor RemuxEngine {
         }
         let width = track.width ?? 1920
         let height = track.height ?? 1080
-        let isHEVC = (track.action == .transcodeHEVC_VT)
+        let isHighEfficiency = (track.action == .transcodeHEVC_VT || track.action == .transcodeAV1)
         if width >= 3840 || height >= 2160 {
-            return isHEVC ? "15000k" : "25000k"
+            return isHighEfficiency ? "15000k" : "25000k"
         } else if width >= 2560 || height >= 1440 {
-            return isHEVC ? "10000k" : "15000k"
+            return isHighEfficiency ? "10000k" : "15000k"
         } else if width >= 1900 || height >= 1000 {
-            return isHEVC ? "6000k" : "8000k"
+            return isHighEfficiency ? "6000k" : "8000k"
         } else if width >= 1200 || height >= 700 {
-            return isHEVC ? "3500k" : "5000k"
+            return isHighEfficiency ? "3500k" : "5000k"
         } else {
-            return isHEVC ? "1800k" : "2500k"
+            return isHighEfficiency ? "1800k" : "2500k"
         }
     }
     
@@ -758,8 +758,7 @@ public actor RemuxEngine {
             }
             
         case .transcodeProRes:
-            let validProResProfiles = ["0", "1", "2", "3", "4", "5"]
-            let profile = cfg.profile.flatMap { validProResProfiles.contains($0) ? $0 : nil } ?? "2"
+            let profile = track.resolvedProResProfile
             let canPreserveAlpha = (profile == "4" || profile == "5") && cfg.preserveAlpha && hasAlpha
             if useHardwareAcceleration {
                 args += ["-c\(spec)", "prores_videotoolbox", "-profile\(spec)", profile]
@@ -948,6 +947,128 @@ public actor RemuxEngine {
         return args
     }
     
+    private static let losslessAudioCodecs: Set<String> = [
+        "flac", "alac", "wav", "aiff", "mlp", "truehd",
+        "pcm_s16le", "pcm_s16be", "pcm_s24le", "pcm_s24be",
+        "pcm_s32le", "pcm_s32be", "pcm_f32le", "pcm_f32be",
+        "pcm_u8", "pcm_s8"
+    ]
+
+    private static func snappedAudioBitrateKbps(_ targetKbps: Double, table: [Int]) -> Int {
+        guard let first = table.first, let last = table.last else { return Int(targetKbps.rounded()) }
+        if targetKbps <= Double(first) { return first }
+        if targetKbps >= Double(last) { return last }
+        var best = first
+        var bestDiff = Double.greatestFiniteMagnitude
+        for candidate in table {
+            let diff = abs(Double(candidate) - targetKbps)
+            if diff < bestDiff || (diff == bestDiff && candidate > best) {
+                bestDiff = diff
+                best = candidate
+            }
+        }
+        return best
+    }
+
+    private static func resolvedAutoAudioBitrate(for track: MediaTrack) -> String {
+        let sourceCh = max(1, track.channels ?? 2)
+        let targetCh: Int = {
+            if let explicit = track.audioConfig.channels {
+                return max(1, explicit)
+            }
+            switch track.action {
+            case .transcodeAC3_51, .transcodeEAC3_51:
+                return min(6, sourceCh)
+            case .transcodeMP3:
+                return min(2, sourceCh)
+            default:
+                return sourceCh
+            }
+        }()
+
+        let lowerCodec = track.codecName.lowercased()
+        let isLosslessSource = losslessAudioCodecs.contains(lowerCodec) || lowerCodec.hasPrefix("pcm_")
+        let sourceLossyKbps: Double? = {
+            guard !isLosslessSource, let bps = track.bitRate, bps >= 16_000 else { return nil }
+            let rawKbps = Double(bps) / 1000.0
+            if targetCh != sourceCh {
+                return rawKbps * (Double(targetCh) / Double(sourceCh))
+            }
+            return rawKbps
+        }()
+
+        switch track.action {
+        case .transcodeAAC:
+            let table = [64, 96, 128, 160, 192, 256, 320, 384, 448, 512]
+            if let kbps = sourceLossyKbps {
+                let minFloor = targetCh >= 6 ? 256 : (targetCh >= 3 ? 192 : (targetCh == 1 ? 64 : 96))
+                let snapped = snappedAudioBitrateKbps(kbps, table: table)
+                return "\(max(minFloor, snapped))k"
+            }
+            if targetCh >= 6 { return "384k" }
+            if targetCh >= 3 { return "256k" }
+            if targetCh == 1 { return "96k" }
+            return "192k"
+
+        case .transcodeAC3_51:
+            let table = [96, 112, 128, 160, 192, 224, 256, 320, 384, 448, 512, 576, 640]
+            if let kbps = sourceLossyKbps {
+                let minFloor = targetCh >= 3 ? 320 : (targetCh == 1 ? 96 : 128)
+                let snapped = snappedAudioBitrateKbps(kbps, table: table)
+                return "\(max(minFloor, snapped))k"
+            }
+            if targetCh >= 3 { return "448k" }
+            if targetCh == 1 { return "128k" }
+            return "192k"
+
+        case .transcodeEAC3_51:
+            let table = [96, 112, 128, 160, 192, 224, 256, 320, 384, 448, 512, 640, 768]
+            if let kbps = sourceLossyKbps {
+                let minFloor = targetCh >= 3 ? 256 : (targetCh == 1 ? 96 : 128)
+                let snapped = snappedAudioBitrateKbps(kbps, table: table)
+                return "\(max(minFloor, snapped))k"
+            }
+            if targetCh >= 3 { return "448k" }
+            if targetCh == 1 { return "128k" }
+            return "192k"
+
+        case .transcodeMP3:
+            let table = [32, 40, 48, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320]
+            if let kbps = sourceLossyKbps {
+                let minFloor = (targetCh == 1) ? 64 : 128
+                let snapped = snappedAudioBitrateKbps(kbps, table: table)
+                return "\(max(minFloor, snapped))k"
+            }
+            return targetCh == 1 ? "128k" : "192k"
+
+        case .transcodeOpus:
+            let table = [32, 48, 64, 96, 128, 160, 192, 256, 320, 384, 448, 510]
+            if let kbps = sourceLossyKbps {
+                let minFloor = targetCh >= 3 ? 192 : (targetCh == 1 ? 64 : 96)
+                let maxCeiling = targetCh >= 3 ? 510 : (targetCh == 1 ? 160 : 256)
+                let snapped = snappedAudioBitrateKbps(kbps, table: table)
+                return "\(min(maxCeiling, max(minFloor, snapped)))k"
+            }
+            if targetCh >= 6 { return "384k" }
+            if targetCh >= 3 { return "256k" }
+            if targetCh == 1 { return "96k" }
+            return "128k"
+
+        default:
+            return "192k"
+        }
+    }
+
+    private static func resolvedMP3VBRQuality(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if trimmed.hasPrefix("V"),
+           let level = Int(trimmed.dropFirst()),
+           (0...6).contains(level) {
+            return "\(level)"
+        }
+        return "2"
+    }
+
     private static func audioEncoderArguments(
         for track: MediaTrack,
         streamSpecifier spec: String,
@@ -955,30 +1076,30 @@ public actor RemuxEngine {
         loudnessMeasurement: LoudnormMeasurement? = nil
     ) -> [String] {
         var args: [String] = []
+        let rawBitrate = track.audioConfig.bitrate.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isAutoBitrate = rawBitrate.isEmpty || rawBitrate.caseInsensitiveCompare("auto") == .orderedSame
+        let resolvedBitrate = isAutoBitrate ? resolvedAutoAudioBitrate(for: track) : rawBitrate
+
         switch track.action {
         case .copy:
             return ["-c\(spec)", "copy"]
         case .transcodeAAC:
-            let fallbackBr = (track.audioConfig.channels == 6) ? "384k" : "192k"
-            let explicitBr = track.audioConfig.bitrate.trimmingCharacters(in: .whitespacesAndNewlines)
-            let br = explicitBr.isEmpty ? fallbackBr : explicitBr
             if binaryCapabilities.supportsAudioToolboxAAC {
                 args += ["-c\(spec)", "aac_at", "-aac_at_mode\(spec)", track.audioConfig.aacMode.rawValue]
                 if track.audioConfig.aacMode == .vbrQuality {
                     args += ["-q\(spec)", "\(track.audioConfig.aacQuality)"]
                 } else {
-                    args += ["-b\(spec)", br]
+                    args += ["-b\(spec)", resolvedBitrate]
                 }
             } else {
-                args += ["-c\(spec)", "aac", "-b\(spec)", br]
+                args += ["-c\(spec)", "aac", "-b\(spec)", resolvedBitrate]
             }
         case .transcodeMP3:
             args += ["-c\(spec)", "libmp3lame"]
             if track.audioConfig.isVBR {
-                let q = track.audioConfig.bitrate == "V0" ? "0" : (track.audioConfig.bitrate == "V2" ? "2" : "4")
-                args += ["-q\(spec)", q]
+                args += ["-q\(spec)", resolvedMP3VBRQuality(rawBitrate)]
             } else {
-                args += ["-b\(spec)", track.audioConfig.bitrate.isEmpty ? "320k" : track.audioConfig.bitrate]
+                args += ["-b\(spec)", resolvedBitrate]
             }
         case .transcodeALAC:
             args += ["-c\(spec)", "alac"]
@@ -988,14 +1109,11 @@ public actor RemuxEngine {
                 args += ["-sample_fmt\(spec)", "s16p"]
             }
         case .transcodeAC3_51:
-            let br = track.audioConfig.bitrate.isEmpty ? "640k" : track.audioConfig.bitrate
-            args += ["-c\(spec)", "ac3", "-b\(spec)", br]
+            args += ["-c\(spec)", "ac3", "-b\(spec)", resolvedBitrate]
         case .transcodeEAC3_51:
-            let br = track.audioConfig.bitrate.isEmpty ? "640k" : track.audioConfig.bitrate
-            args += ["-c\(spec)", "eac3", "-b\(spec)", br]
+            args += ["-c\(spec)", "eac3", "-b\(spec)", resolvedBitrate]
         case .transcodeOpus:
-            let br = track.audioConfig.bitrate.isEmpty ? "510k" : track.audioConfig.bitrate
-            args += ["-c\(spec)", "libopus", "-b\(spec)", br]
+            args += ["-c\(spec)", "libopus", "-b\(spec)", resolvedBitrate]
         case .transcodeFLAC:
             args += ["-c\(spec)", "flac"]
             if track.audioConfig.bitDepth == "24" {
@@ -1004,8 +1122,14 @@ public actor RemuxEngine {
                 args += ["-sample_fmt\(spec)", "s16"]
             }
         case .transcodeWAV:
+            let sf = track.sampleFormat?.lowercased() ?? ""
+            let effectiveBitDepth: String? = track.audioConfig.bitDepth ?? {
+                if sf == "s32" || sf == "s32p" { return "32" }
+                if sf == "s24" || sf == "s24p" { return "24" }
+                return nil
+            }()
             let pcmCodec: String
-            switch track.audioConfig.bitDepth {
+            switch effectiveBitDepth {
             case "32float": pcmCodec = "pcm_f32le"
             case "32": pcmCodec = "pcm_s32le"
             case "24": pcmCodec = "pcm_s24le"
@@ -1014,8 +1138,14 @@ public actor RemuxEngine {
             }
             args += ["-c\(spec)", pcmCodec]
         case .transcodeAIFF:
+            let sf = track.sampleFormat?.lowercased() ?? ""
+            let effectiveBitDepth: String? = track.audioConfig.bitDepth ?? {
+                if sf == "s32" || sf == "s32p" { return "32" }
+                if sf == "s24" || sf == "s24p" { return "24" }
+                return nil
+            }()
             let pcmCodec: String
-            switch track.audioConfig.bitDepth {
+            switch effectiveBitDepth {
             case "32float": pcmCodec = "pcm_f32be"
             case "32": pcmCodec = "pcm_s32be"
             case "24": pcmCodec = "pcm_s24be"
@@ -1055,9 +1185,15 @@ public actor RemuxEngine {
             args += ["-af\(spec)", loudFilter]
         }
         
-        // Channel downmixing / remixing if specified
+        // Channel downmixing / remixing if specified, or safe automatic max-channel clamping
         if let ch = track.audioConfig.channels {
             args += ["-ac\(spec)", "\(ch)"]
+        } else if (track.action == .transcodeAC3_51 || track.action == .transcodeEAC3_51),
+                  (track.channels ?? 0) > 6 {
+            args += ["-ac\(spec)", "6"]
+        } else if track.action == .transcodeMP3,
+                  (track.channels ?? 0) > 2 {
+            args += ["-ac\(spec)", "2"]
         }
         // Sample rate (forced whenever explicit SR OR loudnorm active so 192 kHz loudnorm upsampling never breaks encoders)
         if let sr = track.audioConfig.sampleRate {

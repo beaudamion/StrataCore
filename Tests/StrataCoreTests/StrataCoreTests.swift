@@ -423,13 +423,13 @@ struct StrataCoreTests {
         config.sanitize(for: .transcodeHEVC_VT)
         #expect(config.preserveAlpha == false)
         
-        // Switching to ProRes sets Standard (2) and resets bitrate/multipass/keyFrameInterval
+        // Switching to ProRes sets Automatic (auto) and resets bitrate/multipass/keyFrameInterval
         config.bitrate = "15000k"
         config.keyFrameInterval = 48
         config.multiPass = true
         config.fieldOrder = .topFirst
         config.sanitize(for: .transcodeProRes)
-        #expect(config.profile == "2")
+        #expect(config.profile == "auto")
         #expect(config.bitrate == "auto")
         #expect(config.keyFrameInterval == nil)
         #expect(config.multiPass == false)
@@ -1278,5 +1278,111 @@ struct StrataCoreTests {
                 Issue.record("Expected ProbeError.executionFailed, got \(probeErr)")
             }
         }
+    }
+    
+    @Test("Automatic Audio & ProRes Encoder Defaults Preserve Source Characteristics")
+    func testAutomaticAudioAndProResEncoderDefaults() throws {
+        // 1. Clean UI titles without forced 5.1 surround suffix
+        #expect(TrackAction.transcodeAC3_51.title == "AC3")
+        #expect(TrackAction.transcodeEAC3_51.title == "E-AC3 (Dolby Digital+)")
+        
+        // 2. Every audio encoder defaults to Automatic channels (nil) and adaptive/"auto" bitrate
+        for action in [TrackAction.transcodeAAC, .transcodeAC3_51, .transcodeEAC3_51, .transcodeOpus] {
+            let cfg = AudioEncodingConfig.default(for: action)
+            #expect(cfg.channels == nil, "Expected nil channels for \(action)")
+            #expect(cfg.bitrate == "auto", "Expected auto bitrate for \(action)")
+            #expect(cfg.sampleRate == nil, "Expected nil sampleRate for \(action)")
+        }
+        let mp3Default = AudioEncodingConfig.default(for: .transcodeMP3)
+        #expect(mp3Default.isVBR == true)
+        #expect(mp3Default.bitrate == "V2")
+        #expect(mp3Default.channels == nil)
+        
+        // 3. Mono 124k AAC source -> AC3 / E-AC3 / Opus / MP3 keep original channels & stay close to bitrate
+        let monoTrackBase = MediaTrack(
+            streamIndex: 1,
+            mediaType: .audio,
+            codecName: "aac",
+            channels: 1,
+            channelLayout: "mono",
+            sampleRate: "48000",
+            bitRate: 124_000,
+            isSelected: true
+        )
+        let outURL = URL(fileURLWithPath: "/tmp/auto_out.mkv")
+        let options = RemuxOptions(targetContainer: .mkv, outputURL: outURL)
+        
+        var ac3Mono = monoTrackBase
+        ac3Mono.action = .transcodeAC3_51
+        ac3Mono.audioConfig = AudioEncodingConfig.default(for: .transcodeAC3_51)
+        let ac3MonoArgs = try RemuxEngine.buildArguments(
+            for: MediaFile(url: URL(fileURLWithPath: "/tmp/in.mp4"), filename: "in.mp4", fileSize: 1000, containerFormat: "mov", duration: 10, tracks: [ac3Mono]),
+            options: options
+        )
+        #expect(ac3MonoArgs.contains("ac3"))
+        #expect(ac3MonoArgs.contains("128k"))
+        #expect(!ac3MonoArgs.contains("-ac:a:0"))
+        
+        // 4. 7.1 source -> AC3 safely caps at 6 channels; 5.1 source -> MP3 safely caps at 2 channels
+        var ac3EightCh = MediaTrack(
+            streamIndex: 0,
+            mediaType: .audio,
+            codecName: "truehd",
+            channels: 8,
+            sampleRate: "48000",
+            isSelected: true,
+            action: .transcodeAC3_51
+        )
+        ac3EightCh.audioConfig = AudioEncodingConfig.default(for: .transcodeAC3_51)
+        let ac3EightArgs = try RemuxEngine.buildArguments(
+            for: MediaFile(url: URL(fileURLWithPath: "/tmp/in.mkv"), filename: "in.mkv", fileSize: 1000, containerFormat: "matroska", duration: 10, tracks: [ac3EightCh]),
+            options: options
+        )
+        #expect(ac3EightArgs.contains("-ac:a:0"))
+        #expect(ac3EightArgs.contains("6"))
+        
+        var mp3Surround = MediaTrack(
+            streamIndex: 0,
+            mediaType: .audio,
+            codecName: "ac3",
+            channels: 6,
+            sampleRate: "48000",
+            isSelected: true,
+            action: .transcodeMP3
+        )
+        mp3Surround.audioConfig = AudioEncodingConfig(bitrate: "V3", isVBR: true)
+        let mp3SurroundArgs = try RemuxEngine.buildArguments(
+            for: MediaFile(url: URL(fileURLWithPath: "/tmp/in.mkv"), filename: "in.mkv", fileSize: 1000, containerFormat: "matroska", duration: 10, tracks: [mp3Surround]),
+            options: options
+        )
+        #expect(mp3SurroundArgs.contains("-q:a:0"))
+        #expect(mp3SurroundArgs.contains("3"))
+        #expect(mp3SurroundArgs.contains("-ac:a:0"))
+        #expect(mp3SurroundArgs.contains("2"))
+        
+        // 5. WAV / AIFF with Automatic bitDepth preserves 24-bit lossless source depth
+        var wav24 = MediaTrack(
+            streamIndex: 0,
+            mediaType: .audio,
+            codecName: "flac",
+            channels: 2,
+            sampleRate: "96000",
+            sampleFormat: "s24",
+            isSelected: true,
+            action: .transcodeWAV
+        )
+        wav24.audioConfig = AudioEncodingConfig.default(for: .transcodeWAV)
+        let wav24Args = try RemuxEngine.buildArguments(
+            for: MediaFile(url: URL(fileURLWithPath: "/tmp/in.mkv"), filename: "in.mkv", fileSize: 1000, containerFormat: "matroska", duration: 10, tracks: [wav24]),
+            options: options
+        )
+        #expect(wav24Args.contains("pcm_s24le"))
+        
+        // 6. ProRes Automatic profile picks 422 Standard (2) on standard sources and 4444 (4) on alpha/4:4:4 sources
+        var proResStd = MediaTrack(streamIndex: 0, mediaType: .video, codecName: "h264", pixelFormat: "yuv420p", isSelected: true, action: .transcodeProRes)
+        #expect(proResStd.videoConfig.profile == "auto")
+        #expect(proResStd.resolvedProResProfile == "2")
+        proResStd.pixelFormat = "yuva444p10le"
+        #expect(proResStd.resolvedProResProfile == "4")
     }
 }

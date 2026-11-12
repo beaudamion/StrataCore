@@ -108,9 +108,9 @@ public enum TrackAction: String, Codable, CaseIterable, Identifiable, Sendable {
         case .transcodeALAC:
             return "Apple Lossless (ALAC)"
         case .transcodeAC3_51:
-            return "AC3 5.1 Surround"
+            return "AC3"
         case .transcodeEAC3_51:
-            return "E-AC3 5.1 (Dolby Digital+)"
+            return "E-AC3 (Dolby Digital+)"
         case .transcodeOpus:
             return "Opus"
         case .transcodeFLAC:
@@ -772,7 +772,7 @@ public struct VideoEncodingConfig: Hashable, Codable, Sendable {
                 frameRate: nil,
                 fieldOrder: nil,
                 colorSpace: nil,
-                profile: "2",
+                profile: "auto",
                 entropyMode: nil,
                 keyFrameInterval: nil,
                 allowFrameReordering: true,
@@ -880,11 +880,11 @@ public struct VideoEncodingConfig: Hashable, Codable, Sendable {
             }
         case .transcodeProRes:
             svtPreset = nil
-            let validProfiles = ["0", "1", "2", "3", "4", "5"]
+            let validProfiles = ["auto", "0", "1", "2", "3", "4", "5"]
             if let prof = profile, !validProfiles.contains(prof) {
-                profile = "2"
+                profile = "auto"
             } else if profile == nil {
-                profile = "2"
+                profile = "auto"
             }
             bitrate = "auto"
             maxBitrate = nil
@@ -893,7 +893,7 @@ public struct VideoEncodingConfig: Hashable, Codable, Sendable {
             multiPass = false
             rateControlMode = .constantQuality
             spatialAQ = false
-            if profile != "4" && profile != "5" {
+            if profile != "auto" && profile != "4" && profile != "5" {
                 preserveAlpha = false
             }
         case .transcodeAV1:
@@ -975,23 +975,23 @@ public struct AudioEncodingConfig: Hashable, Codable, Sendable {
     public static func `default`(for action: TrackAction) -> AudioEncodingConfig {
         switch action {
         case .transcodeMP3:
-            return AudioEncodingConfig(bitrate: "320k", isVBR: false)
+            return AudioEncodingConfig(bitrate: "V2", channels: nil, isVBR: true)
         case .transcodeALAC:
-            return AudioEncodingConfig(bitrate: "Lossless", bitDepth: nil)
+            return AudioEncodingConfig(bitrate: "Lossless", channels: nil, bitDepth: nil)
         case .transcodeAAC:
-            return AudioEncodingConfig(bitrate: "192k", channels: nil, isVBR: true, aacMode: .vbrQuality, aacQuality: 2)
+            return AudioEncodingConfig(bitrate: "auto", channels: nil, isVBR: true, aacMode: .vbrQuality, aacQuality: 2)
         case .transcodeAC3_51:
-            return AudioEncodingConfig(bitrate: "640k", channels: 6)
+            return AudioEncodingConfig(bitrate: "auto", channels: nil)
         case .transcodeEAC3_51:
-            return AudioEncodingConfig(bitrate: "640k", channels: 6)
+            return AudioEncodingConfig(bitrate: "auto", channels: nil)
         case .transcodeOpus:
-            return AudioEncodingConfig(bitrate: "510k", channels: 2)
+            return AudioEncodingConfig(bitrate: "auto", channels: nil)
         case .transcodeFLAC:
-            return AudioEncodingConfig(bitrate: "Lossless", bitDepth: nil)
+            return AudioEncodingConfig(bitrate: "Lossless", channels: nil, bitDepth: nil)
         case .transcodeWAV:
-            return AudioEncodingConfig(bitrate: "Uncompressed", bitDepth: nil)
+            return AudioEncodingConfig(bitrate: "Uncompressed", channels: nil, bitDepth: nil)
         case .transcodeAIFF:
-            return AudioEncodingConfig(bitrate: "Uncompressed", bitDepth: nil)
+            return AudioEncodingConfig(bitrate: "Uncompressed", channels: nil, bitDepth: nil)
         default:
             return AudioEncodingConfig()
         }
@@ -1402,6 +1402,18 @@ public struct MediaTrack: Identifiable, Hashable, Codable, Sendable {
                 || trLower == "arib-std-b67"
                 || isHDRDolbyVision
         }
+    }
+
+    public var resolvedProResProfile: String {
+        let validProfiles = ["0", "1", "2", "3", "4", "5"]
+        if let prof = videoConfig.profile, validProfiles.contains(prof) {
+            return prof
+        }
+        let pfLower = pixelFormat?.lowercased() ?? ""
+        if videoConfig.preserveAlpha || hasAlphaChannel || pfLower.contains("444") || pfLower.contains("p410") {
+            return "4"
+        }
+        return "2"
     }
     
     private func tagValue(forKeyCaseInsensitive target: String) -> String? {
