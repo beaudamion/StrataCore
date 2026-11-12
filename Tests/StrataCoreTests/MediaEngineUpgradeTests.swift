@@ -88,7 +88,7 @@ struct MediaEngineUpgradeTests {
             #expect(liveCaps.supportsLibVMAF)
             #expect(liveCaps.supportsDumpExtraBSF)
             #expect(liveCaps.supportsProResRAWDecode)
-            if ffmpeg.contains("/opt/homebrew/") {
+            if ffmpeg.contains("/opt/homebrew/") || ffmpeg.contains("/Resources/bin/") {
                 #expect(liveCaps.supportsYadifVT)
             }
         }
