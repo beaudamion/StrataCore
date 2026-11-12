@@ -15,7 +15,15 @@ let package = Package(
     targets: [
         .target(
             name: "StrataCore",
-            path: "Sources/StrataCore"
+            path: "Sources/StrataCore",
+            linkerSettings: [
+                .linkedFramework("IOKit"),
+                .linkedFramework("VideoToolbox"),
+                .linkedFramework("MediaToolbox"),
+                .linkedFramework("AVFoundation"),
+                .linkedFramework("CoreMedia"),
+                .linkedFramework("CoreVideo")
+            ]
         ),
         .testTarget(
             name: "StrataCoreTests",

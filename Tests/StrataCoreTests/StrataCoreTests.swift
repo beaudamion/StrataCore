@@ -483,7 +483,8 @@ struct StrataCoreTests {
         #expect(h264Args.contains("24000/1001"))
         #expect(h264Args.contains("-color_primaries:v:0"))
         #expect(h264Args.contains("bt709"))
-        #expect(h264Args.contains { $0.contains("yadif=0:-1:1,setparams=field_mode=prog:color_primaries=bt709") })
+        #expect(h264Args.contains { $0.contains("setparams=field_mode=prog:color_primaries=bt709") })
+        #expect(!h264Args.contains { $0.contains("yadif") })
         
         // 4. HEVC 10-bit 4:2:0, HEVC 8-bit 4:2:2 (x265), & HEVC Alpha (bgra)
         let hevc10Track = MediaTrack(
@@ -883,5 +884,230 @@ struct StrataCoreTests {
             #expect(locator.ffmpegVersion?.isEmpty == false)
         }
         #expect(observerTickCount == 0, "FFmpegLocator.init() must not spin CFRunLoop (prevents dispatch_once re-entrancy)")
+    }
+    
+    @Test("Dynamic Output Suffix Helper: Passthrough vs Encoded & Collision Safety")
+    func testDynamicOutputNamingHelper() {
+        let sourceMP4 = URL(fileURLWithPath: "/tmp/Feature_Film.mp4")
+        let sameDir = URL(fileURLWithPath: "/tmp")
+        let otherDir = URL(fileURLWithPath: "/tmp/exports")
+        
+        let copyVideo = MediaTrack(streamIndex: 0, mediaType: .video, codecName: "h264", isSelected: true, action: .copy)
+        let copyAudio = MediaTrack(streamIndex: 1, mediaType: .audio, codecName: "aac", isSelected: true, action: .copy)
+        let hevcVideo = MediaTrack(streamIndex: 0, mediaType: .video, codecName: "h264", isSelected: true, action: .transcodeHEVC_VT)
+        let aacAudio = MediaTrack(streamIndex: 1, mediaType: .audio, codecName: "ac3", isSelected: true, action: .transcodeAAC_Stereo)
+        let unselectedTranscodeSub = MediaTrack(streamIndex: 2, mediaType: .subtitle, codecName: "subrip", isSelected: false, action: .transcodeMovText)
+        
+        // 1. All-passthrough same-dir same-ext -> .remuxed
+        let passthroughURL = OutputNamingHelper.defaultOutputURL(
+            for: sourceMP4,
+            tracks: [copyVideo, copyAudio, unselectedTranscodeSub],
+            targetContainer: .mp4,
+            targetDirectory: sameDir,
+            appendOutputSuffix: true
+        )
+        #expect(passthroughURL.lastPathComponent == "Feature_Film.remuxed.mp4")
+        
+        // 2. Video transcode same-dir same-ext -> .encoded
+        let videoEncodedURL = OutputNamingHelper.defaultOutputURL(
+            for: sourceMP4,
+            tracks: [hevcVideo, copyAudio],
+            targetContainer: .mp4,
+            targetDirectory: sameDir,
+            appendOutputSuffix: true
+        )
+        #expect(videoEncodedURL.lastPathComponent == "Feature_Film.encoded.mp4")
+        
+        // 3. Audio-only transcode same-dir same-ext -> .encoded
+        let audioEncodedURL = OutputNamingHelper.defaultOutputURL(
+            for: sourceMP4,
+            tracks: [copyVideo, aacAudio],
+            targetContainer: .mp4,
+            targetDirectory: sameDir,
+            appendOutputSuffix: true
+        )
+        #expect(audioEncodedURL.lastPathComponent == "Feature_Film.encoded.mp4")
+        
+        // 4. Different container or different folder -> clean basename without suffix
+        let crossContainerURL = OutputNamingHelper.defaultOutputURL(
+            for: sourceMP4,
+            tracks: [hevcVideo, copyAudio],
+            targetContainer: .mkv,
+            targetDirectory: sameDir,
+            appendOutputSuffix: true
+        )
+        #expect(crossContainerURL.lastPathComponent == "Feature_Film.mkv")
+        
+        let crossFolderURL = OutputNamingHelper.defaultOutputURL(
+            for: sourceMP4,
+            tracks: [hevcVideo, copyAudio],
+            targetContainer: .mp4,
+            targetDirectory: otherDir,
+            appendOutputSuffix: true
+        )
+        #expect(crossFolderURL.lastPathComponent == "Feature_Film.mp4")
+        
+        // 5. Suffix disabled with same-dir same-ext collision -> numbered fallback skipping existing files
+        let fallback1 = OutputNamingHelper.defaultOutputURL(
+            for: sourceMP4,
+            tracks: [hevcVideo, copyAudio],
+            targetContainer: .mp4,
+            targetDirectory: sameDir,
+            appendOutputSuffix: false,
+            fileExists: { _ in false }
+        )
+        #expect(fallback1.lastPathComponent == "Feature_Film (1).mp4")
+        
+        let fallback2 = OutputNamingHelper.defaultOutputURL(
+            for: sourceMP4,
+            tracks: [copyVideo, copyAudio],
+            targetContainer: .mp4,
+            targetDirectory: sameDir,
+            appendOutputSuffix: false,
+            fileExists: { url in
+                url.lastPathComponent == "Feature_Film (1).mp4" || url.lastPathComponent == "Feature_Film (2).mp4"
+            }
+        )
+        #expect(fallback2.lastPathComponent == "Feature_Film (3).mp4")
+        
+        // 6. Suffix disabled on cross-folder -> no unnecessary (1)
+        let disabledCrossFolder = OutputNamingHelper.defaultOutputURL(
+            for: sourceMP4,
+            tracks: [hevcVideo, copyAudio],
+            targetContainer: .mp4,
+            targetDirectory: otherDir,
+            appendOutputSuffix: false,
+            fileExists: { _ in false }
+        )
+        #expect(disabledCrossFolder.lastPathComponent == "Feature_Film.mp4")
+    }
+    
+    @Test("Compact UI Labels for Passthrough Action and Undetermined Language")
+    func testCompactTrackActionAndLanguageLabels() {
+        #expect(TrackAction.copy.title == "Passthrough")
+        #expect(LanguageDirectory.commonLanguages.first?.code == "und")
+        #expect(LanguageDirectory.commonLanguages.first?.displayName == "Undet. (und)")
+        #expect(LanguageDirectory.displayName(for: "und") == "Undet.")
+        #expect(LanguageDirectory.displayName(for: "") == "Undet.")
+    }
+    
+    @Test("FFmpegLocator Rejects Non-Launching Dyld-Broken Binaries and Falls Back Cleanly")
+    @MainActor
+    func testFFmpegLocatorRejectsBrokenBinariesAndFallsBack() throws {
+        let fm = FileManager.default
+        let workDir = fm.temporaryDirectory.appendingPathComponent("strata_locator_test_\(UUID().uuidString)")
+        let brokenDir = workDir.appendingPathComponent("broken")
+        let goodDir = workDir.appendingPathComponent("good")
+        try fm.createDirectory(at: brokenDir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: goodDir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: workDir) }
+        
+        let brokenFFmpeg = brokenDir.appendingPathComponent("ffmpeg")
+        let brokenFFprobe = brokenDir.appendingPathComponent("ffprobe")
+        let brokenScript = "#!/bin/sh\necho \"dyld[1234]: Library not loaded: /opt/homebrew/opt/ffmpeg/lib/libavcodec.63.dylib (no such file)\" >&2\nexit 1\n"
+        try brokenScript.write(to: brokenFFmpeg, atomically: true, encoding: .utf8)
+        try brokenScript.write(to: brokenFFprobe, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: brokenFFmpeg.path)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: brokenFFprobe.path)
+        
+        let goodFFmpeg = goodDir.appendingPathComponent("ffmpeg")
+        let goodFFprobe = goodDir.appendingPathComponent("ffprobe")
+        try "#!/bin/sh\necho \"ffmpeg version 9.0.2-static\"\nexit 0\n".write(to: goodFFmpeg, atomically: true, encoding: .utf8)
+        try "#!/bin/sh\necho \"ffprobe version 9.0.2-static\"\nexit 0\n".write(to: goodFFprobe, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: goodFFmpeg.path)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: goodFFprobe.path)
+        
+        let suiteName = "StrataLocator_BrokenBinaryTest_\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        
+        let locator = FFmpegLocator(
+            userDefaults: defaults,
+            bundledSearchPathsOverride: [
+                "ffmpeg": [brokenFFmpeg.path],
+                "ffprobe": [brokenFFprobe.path]
+            ],
+            homebrewSearchDirsOverride: [goodDir.path],
+            systemSearchDirsOverride: []
+        )
+        
+        // Auto mode skips broken bundled binaries and selects usable fallback binaries
+        #expect(locator.isReady == true)
+        #expect(locator.activeSource == .homebrew)
+        #expect(locator.ffmpegPath == goodFFmpeg.path)
+        #expect(locator.ffprobePath == goodFFprobe.path)
+        #expect(locator.ffmpegVersion == "ffmpeg version 9.0.2-static")
+        
+        // Explicit bundled mode reports missing instead of falsely ready with blank version
+        locator.setEngineMode(.bundled)
+        #expect(locator.isReady == false)
+        #expect(locator.activeSource == .missing)
+        #expect(locator.ffmpegPath == nil)
+        #expect(locator.ffprobePath == nil)
+        #expect(locator.ffmpegVersion == nil)
+    }
+    
+    @Test("ProbePipeline Classifies Dyld Linker and Signal Crashes as ExecutionFailed Instead of FileNotFound")
+    func testProbePipelineClassifiesDynamicLinkerFailures() async throws {
+        let sampleURL = URL(fileURLWithPath: "/tmp/sample.mp4")
+        let dyldStderr = """
+        dyld[4321]: Library not loaded: /opt/homebrew/Cellar/ffmpeg/9.0.2_1/lib/libavdevice.63.dylib
+          Referenced from: <00000000> /Applications/Strata.app/Contents/Resources/bin/ffprobe
+          Reason: tried: '/opt/homebrew/Cellar/ffmpeg/9.0.2_1/lib/libavdevice.63.dylib' (no such file)
+        """
+        
+        let err = ProbePipeline.classifyFailure(
+            rawStderr: dyldStderr,
+            terminationStatus: 6,
+            terminationReason: .uncaughtSignal,
+            fileURL: sampleURL
+        )
+        switch err {
+        case .executionFailed(let detail):
+            #expect(detail.contains("Library not loaded"))
+            #expect(err.errorDescription?.contains("ffprobe execution failed:") == false)
+        default:
+            Issue.record("Expected executionFailed for dyld error, got \(err)")
+        }
+        
+        // Empty stderr with uncaughtSignal (e.g. code signature SIGKILL) must also report executionFailed
+        let sigErr = ProbePipeline.classifyFailure(
+            rawStderr: "",
+            terminationStatus: 9,
+            terminationReason: .uncaughtSignal,
+            fileURL: sampleURL
+        )
+        switch sigErr {
+        case .executionFailed:
+            break
+        default:
+            Issue.record("Expected executionFailed for uncaughtSignal, got \(sigErr)")
+        }
+        
+        // Live end-to-end probe against a fake crashing ffprobe script and non-empty dummy .mp4
+        let fm = FileManager.default
+        let workDir = fm.temporaryDirectory.appendingPathComponent("strata_probe_dyld_\(UUID().uuidString)")
+        try fm.createDirectory(at: workDir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: workDir) }
+        
+        let dummyMP4 = workDir.appendingPathComponent("clip.mp4")
+        try Data([0x00, 0x00, 0x00, 0x18]).write(to: dummyMP4)
+        
+        let badFFprobe = workDir.appendingPathComponent("ffprobe")
+        try "#!/bin/sh\necho \"dyld[99]: Library not loaded: /opt/homebrew/lib/libavutil.60.dylib (no such file)\" >&2\nexit 1\n"
+            .write(to: badFFprobe, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: badFFprobe.path)
+        
+        do {
+            _ = try await ProbePipeline.shared.probe(fileURL: dummyMP4, ffprobePath: badFFprobe.path)
+            Issue.record("Expected probe to throw executionFailed when ffprobe fails with dyld error")
+        } catch let probeErr as ProbeError {
+            switch probeErr {
+            case .executionFailed(let msg):
+                #expect(msg.contains("Library not loaded"))
+            default:
+                Issue.record("Expected ProbeError.executionFailed, got \(probeErr)")
+            }
+        }
     }
 }

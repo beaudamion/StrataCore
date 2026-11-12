@@ -1,6 +1,6 @@
 import Foundation
 
-public enum ContainerFormat: String, CaseIterable, Identifiable, Codable {
+public enum ContainerFormat: String, CaseIterable, Identifiable, Codable, Sendable {
     case mp4 = "mp4"
     case mkv = "mkv"
     case m4v = "m4v"

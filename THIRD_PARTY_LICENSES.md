@@ -18,4 +18,5 @@ In compliance with the LGPL/GPL:
 1. FFmpeg is the intellectual property of the FFmpeg developers. Strata does not claim ownership of FFmpeg.
 2. You can freely inspect, modify, and recompile FFmpeg from its official source code at:
    `https://git.ffmpeg.org/ffmpeg.git`
-3. Users of Strata may swap or replace the FFmpeg and FFprobe executables at any time via **Strata > Settings > FFmpeg Engine & Binaries**, or by pointing Strata to custom builds or a system package manager (such as Homebrew).
+3. When distributing Strata's bundled self-contained FFmpeg 9.0.2 build, one upstream macOS Metal filter bugfix patch is applied to `libavfilter/vf_yadif_videotoolbox.m` (`@autoreleasepool` / double-release fix). The full patch is published alongside source notices in [`Patches/ffmpeg-9.0.2-yadif_videotoolbox-autoreleasepool.patch`](Patches/ffmpeg-9.0.2-yadif_videotoolbox-autoreleasepool.patch).
+4. Users of Strata may swap or replace the FFmpeg and FFprobe executables at any time via **Strata > Settings > FFmpeg Engine & Binaries**, or by pointing Strata to custom builds or a system package manager (such as Homebrew).

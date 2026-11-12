@@ -1,6 +1,6 @@
 import Foundation
 
-public struct RemuxProgress: Equatable {
+public struct RemuxProgress: Equatable, Sendable {
     public let progress: Double // 0.0 to 1.0
     public let currentTime: Double // seconds
     public let totalTime: Double // seconds
@@ -9,6 +9,12 @@ public struct RemuxProgress: Equatable {
     public let bitrate: String
     public let frame: Int64
     public let remainingSeconds: Double?
+    public let activeSegments: Int?
+    public let phaseLabel: String?
+    public let notice: String?
+    public let executionTierLabel: String?
+    public let qcSummary: String?
+    public let pixelBufferPoolShared: Bool?
     
     public init(
         progress: Double,
@@ -18,7 +24,13 @@ public struct RemuxProgress: Equatable {
         speed: String = "1.0x",
         bitrate: String = "",
         frame: Int64 = 0,
-        remainingSeconds: Double? = nil
+        remainingSeconds: Double? = nil,
+        activeSegments: Int? = nil,
+        phaseLabel: String? = nil,
+        notice: String? = nil,
+        executionTierLabel: String? = nil,
+        qcSummary: String? = nil,
+        pixelBufferPoolShared: Bool? = nil
     ) {
         self.progress = max(0.0, min(1.0, progress))
         self.currentTime = currentTime
@@ -28,6 +40,12 @@ public struct RemuxProgress: Equatable {
         self.bitrate = bitrate
         self.frame = frame
         self.remainingSeconds = remainingSeconds
+        self.activeSegments = activeSegments
+        self.phaseLabel = phaseLabel
+        self.notice = notice
+        self.executionTierLabel = executionTierLabel
+        self.qcSummary = qcSummary
+        self.pixelBufferPoolShared = pixelBufferPoolShared
     }
 }
 

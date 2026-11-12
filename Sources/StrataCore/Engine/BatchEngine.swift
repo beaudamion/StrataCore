@@ -241,14 +241,14 @@ public final class BatchEngine: ObservableObject {
                 let outURL: URL
                 if let custom = item.outputURL {
                     outURL = custom
-                } else if let customFolder = self.customOutputFolder {
-                    let baseName = item.sourceURL.deletingPathExtension().lastPathComponent
-                    outURL = customFolder.appendingPathComponent("\(baseName).\(item.targetContainer.fileExtension)")
                 } else {
-                    let folder = item.sourceURL.deletingLastPathComponent()
-                    let baseName = item.sourceURL.deletingPathExtension().lastPathComponent
-                    let filename = "\(baseName).remuxed.\(item.targetContainer.fileExtension)"
-                    outURL = folder.appendingPathComponent(filename)
+                    let targetDir = self.customOutputFolder ?? item.sourceURL.deletingLastPathComponent()
+                    outURL = OutputNamingHelper.defaultOutputURL(
+                        for: item.sourceURL,
+                        tracks: validMedia.tracks,
+                        targetContainer: item.targetContainer,
+                        targetDirectory: targetDir
+                    )
                 }
                 
                 let options = RemuxOptions(
@@ -256,7 +256,8 @@ public final class BatchEngine: ObservableObject {
                     outputURL: outURL,
                     stripAllMetadata: item.stripMetadata,
                     stripChapters: false,
-                    fastStart: item.fastStart && item.targetContainer.supportsFastStart
+                    fastStart: item.fastStart && item.targetContainer.supportsFastStart,
+                    segmentedEncodingMode: .off
                 )
                 
                 let engine = RemuxEngine()
