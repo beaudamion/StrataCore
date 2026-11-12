@@ -884,4 +884,100 @@ struct StrataCoreTests {
         }
         #expect(observerTickCount == 0, "FFmpegLocator.init() must not spin CFRunLoop (prevents dispatch_once re-entrancy)")
     }
+    
+    @Test("Dynamic Output Suffix Helper: Passthrough vs Encoded & Collision Safety")
+    func testDynamicOutputNamingHelper() {
+        let sourceMP4 = URL(fileURLWithPath: "/tmp/Feature_Film.mp4")
+        let sameDir = URL(fileURLWithPath: "/tmp")
+        let otherDir = URL(fileURLWithPath: "/tmp/exports")
+        
+        let copyVideo = MediaTrack(streamIndex: 0, mediaType: .video, codecName: "h264", isSelected: true, action: .copy)
+        let copyAudio = MediaTrack(streamIndex: 1, mediaType: .audio, codecName: "aac", isSelected: true, action: .copy)
+        let hevcVideo = MediaTrack(streamIndex: 0, mediaType: .video, codecName: "h264", isSelected: true, action: .transcodeHEVC_VT)
+        let aacAudio = MediaTrack(streamIndex: 1, mediaType: .audio, codecName: "ac3", isSelected: true, action: .transcodeAAC_Stereo)
+        let unselectedTranscodeSub = MediaTrack(streamIndex: 2, mediaType: .subtitle, codecName: "subrip", isSelected: false, action: .transcodeMovText)
+        
+        // 1. All-passthrough same-dir same-ext -> .remuxed
+        let passthroughURL = OutputNamingHelper.defaultOutputURL(
+            for: sourceMP4,
+            tracks: [copyVideo, copyAudio, unselectedTranscodeSub],
+            targetContainer: .mp4,
+            targetDirectory: sameDir,
+            appendOutputSuffix: true
+        )
+        #expect(passthroughURL.lastPathComponent == "Feature_Film.remuxed.mp4")
+        
+        // 2. Video transcode same-dir same-ext -> .encoded
+        let videoEncodedURL = OutputNamingHelper.defaultOutputURL(
+            for: sourceMP4,
+            tracks: [hevcVideo, copyAudio],
+            targetContainer: .mp4,
+            targetDirectory: sameDir,
+            appendOutputSuffix: true
+        )
+        #expect(videoEncodedURL.lastPathComponent == "Feature_Film.encoded.mp4")
+        
+        // 3. Audio-only transcode same-dir same-ext -> .encoded
+        let audioEncodedURL = OutputNamingHelper.defaultOutputURL(
+            for: sourceMP4,
+            tracks: [copyVideo, aacAudio],
+            targetContainer: .mp4,
+            targetDirectory: sameDir,
+            appendOutputSuffix: true
+        )
+        #expect(audioEncodedURL.lastPathComponent == "Feature_Film.encoded.mp4")
+        
+        // 4. Different container or different folder -> clean basename without suffix
+        let crossContainerURL = OutputNamingHelper.defaultOutputURL(
+            for: sourceMP4,
+            tracks: [hevcVideo, copyAudio],
+            targetContainer: .mkv,
+            targetDirectory: sameDir,
+            appendOutputSuffix: true
+        )
+        #expect(crossContainerURL.lastPathComponent == "Feature_Film.mkv")
+        
+        let crossFolderURL = OutputNamingHelper.defaultOutputURL(
+            for: sourceMP4,
+            tracks: [hevcVideo, copyAudio],
+            targetContainer: .mp4,
+            targetDirectory: otherDir,
+            appendOutputSuffix: true
+        )
+        #expect(crossFolderURL.lastPathComponent == "Feature_Film.mp4")
+        
+        // 5. Suffix disabled with same-dir same-ext collision -> numbered fallback skipping existing files
+        let fallback1 = OutputNamingHelper.defaultOutputURL(
+            for: sourceMP4,
+            tracks: [hevcVideo, copyAudio],
+            targetContainer: .mp4,
+            targetDirectory: sameDir,
+            appendOutputSuffix: false,
+            fileExists: { _ in false }
+        )
+        #expect(fallback1.lastPathComponent == "Feature_Film (1).mp4")
+        
+        let fallback2 = OutputNamingHelper.defaultOutputURL(
+            for: sourceMP4,
+            tracks: [copyVideo, copyAudio],
+            targetContainer: .mp4,
+            targetDirectory: sameDir,
+            appendOutputSuffix: false,
+            fileExists: { url in
+                url.lastPathComponent == "Feature_Film (1).mp4" || url.lastPathComponent == "Feature_Film (2).mp4"
+            }
+        )
+        #expect(fallback2.lastPathComponent == "Feature_Film (3).mp4")
+        
+        // 6. Suffix disabled on cross-folder -> no unnecessary (1)
+        let disabledCrossFolder = OutputNamingHelper.defaultOutputURL(
+            for: sourceMP4,
+            tracks: [hevcVideo, copyAudio],
+            targetContainer: .mp4,
+            targetDirectory: otherDir,
+            appendOutputSuffix: false,
+            fileExists: { _ in false }
+        )
+        #expect(disabledCrossFolder.lastPathComponent == "Feature_Film.mp4")
+    }
 }
