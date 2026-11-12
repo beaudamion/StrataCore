@@ -483,7 +483,8 @@ struct StrataCoreTests {
         #expect(h264Args.contains("24000/1001"))
         #expect(h264Args.contains("-color_primaries:v:0"))
         #expect(h264Args.contains("bt709"))
-        #expect(h264Args.contains { $0.contains("yadif=0:-1:1,setparams=field_mode=prog:color_primaries=bt709") })
+        #expect(h264Args.contains { $0.contains("setparams=field_mode=prog:color_primaries=bt709") })
+        #expect(!h264Args.contains { $0.contains("yadif") })
         
         // 4. HEVC 10-bit 4:2:0, HEVC 8-bit 4:2:2 (x265), & HEVC Alpha (bgra)
         let hevc10Track = MediaTrack(

@@ -1,5 +1,23 @@
 import Foundation
 
+public struct SmartCutSegmentPlan: Equatable, Sendable {
+    public let leadingReencodeRange: MediaTrimRange?
+    public let losslessCopyRange: MediaTrimRange?
+    public let trailingReencodeRange: MediaTrimRange?
+    public let requiresEdgeReencode: Bool
+    
+    public init(
+        leadingReencodeRange: MediaTrimRange?,
+        losslessCopyRange: MediaTrimRange?,
+        trailingReencodeRange: MediaTrimRange?
+    ) {
+        self.leadingReencodeRange = leadingReencodeRange
+        self.losslessCopyRange = losslessCopyRange
+        self.trailingReencodeRange = trailingReencodeRange
+        self.requiresEdgeReencode = (leadingReencodeRange != nil) || (trailingReencodeRange != nil)
+    }
+}
+
 public struct VideoSegmentBoundary: Equatable, Sendable {
     public let index: Int
     /// Accurate input `-ss` timestamp slightly before `exactStartPTS` (nil for chunk 0).
@@ -220,5 +238,161 @@ public enum KeyframeProber {
         }
         
         return parseKeyframeTimestamps(fromCSV: text)
+    }
+    
+    // MARK: - v2.0 Frame-Accurate Smart-Cut Foundations (Non-UI)
+    
+    /// Computes pure Smart-Cut segment boundaries for an arbitrary `[inTime, outTime]` selection given probed IDR keyframes.
+    public static func planSmartCutSegments(
+        trimRange: MediaTrimRange,
+        keyframes: [Double],
+        tolerance: Double = 0.002
+    ) -> SmartCutSegmentPlan {
+        guard trimRange.isValid else {
+            return SmartCutSegmentPlan(leadingReencodeRange: nil, losslessCopyRange: nil, trailingReencodeRange: nil)
+        }
+        let sortedKF = keyframes.filter { $0.isFinite && $0 >= 0 }.sorted()
+        let firstCopyKF = sortedKF.first { $0 >= trimRange.inTime - tolerance }
+        
+        // No IDR keyframe inside selection -> entire trimmed region is re-encoded with matched codec params
+        guard let copyStart = firstCopyKF, copyStart <= trimRange.outTime - tolerance else {
+            return SmartCutSegmentPlan(
+                leadingReencodeRange: trimRange,
+                losslessCopyRange: nil,
+                trailingReencodeRange: nil
+            )
+        }
+        
+        let leadingRange: MediaTrimRange? = (copyStart - trimRange.inTime > tolerance)
+            ? MediaTrimRange(inTime: trimRange.inTime, outTime: copyStart)
+            : nil
+        
+        let lastKFInWindow = sortedKF.last { $0 >= copyStart - tolerance && $0 <= trimRange.outTime + tolerance }
+        let trailingRange: MediaTrimRange?
+        let copyEnd: Double
+        if let endKF = lastKFInWindow, endKF > copyStart + tolerance, abs(trimRange.outTime - endKF) > tolerance {
+            copyEnd = endKF
+            trailingRange = MediaTrimRange(inTime: endKF, outTime: trimRange.outTime)
+        } else {
+            copyEnd = trimRange.outTime
+            trailingRange = nil
+        }
+        
+        let middleCopy = MediaTrimRange(inTime: copyStart, outTime: copyEnd)
+        return SmartCutSegmentPlan(
+            leadingReencodeRange: leadingRange,
+            losslessCopyRange: middleCopy.isValid ? middleCopy : nil,
+            trailingReencodeRange: trailingRange
+        )
+    }
+    
+    /// Probes localized keyframes surrounding `trimRange` and resolves the Smart-Cut plan for v2.0 Timeline Cutting.
+    public static func findSurroundingKeyframes(
+        fileURL: URL,
+        videoStreamIndex: Int,
+        trimRange: MediaTrimRange,
+        duration: Double,
+        ffprobePath: String
+    ) async -> SmartCutSegmentPlan {
+        let startWindow = max(0.0, trimRange.inTime - 10.0)
+        let leadingKFs = await probeKeyframesInWindow(
+            fileURL: fileURL,
+            videoStreamIndex: videoStreamIndex,
+            windowStart: startWindow,
+            windowDuration: 20.0,
+            ffprobePath: ffprobePath
+        )
+        let endWindow = max(0.0, trimRange.outTime - 10.0)
+        let trailingKFs = await probeKeyframesInWindow(
+            fileURL: fileURL,
+            videoStreamIndex: videoStreamIndex,
+            windowStart: endWindow,
+            windowDuration: min(20.0, max(1.0, duration - endWindow)),
+            ffprobePath: ffprobePath
+        )
+        let merged = Array(Set(leadingKFs + trailingKFs)).sorted()
+        return planSmartCutSegments(trimRange: trimRange, keyframes: merged)
+    }
+    
+    /// Builds codec-matched edge re-encode arguments for an open-GOP Smart-Cut boundary slice.
+    public static func buildSmartCutEdgeArguments(
+        sourceURL: URL,
+        videoTrack: MediaTrack,
+        edgeRange: MediaTrimRange,
+        isLeadingEdge: Bool,
+        isMP4Like: Bool,
+        outputURL: URL
+    ) -> [String] {
+        var args: [String] = [
+            "-y", "-hide_banner",
+            "-ss", String(format: "%.6f", edgeRange.inTime),
+            "-i", sourceURL.path,
+            "-t", String(format: "%.6f", edgeRange.duration),
+            "-map", "0:\(videoTrack.streamIndex)",
+            "-an", "-sn", "-dn"
+        ]
+        
+        let lowerCodec = videoTrack.codecName.lowercased()
+        let isHEVC = lowerCodec == "hevc" || lowerCodec == "h265" || lowerCodec == "hev1" || lowerCodec == "hvc1"
+        args += ["-c:v:0", isHEVC ? "hevc_videotoolbox" : "h264_videotoolbox"]
+        args += ["-q:v:0", "\(VideoQualityPreset.balanced.qualityValue)", "-realtime:v:0", "0", "-spatial_aq:v:0", "1"]
+        
+        if let profile = videoTrack.profile?.lowercased().replacingOccurrences(of: " ", with: ""), !profile.isEmpty {
+            if isHEVC {
+                if ["main", "main10", "main42210"].contains(profile) {
+                    args += ["-profile:v:0", profile]
+                }
+            } else if ["baseline", "main", "high"].contains(profile) {
+                args += ["-profile:v:0", profile]
+            }
+        }
+        
+        if let level = videoTrack.codecLevel, level > 0, let formatted = videoTrack.codecLevelDisplay {
+            args += ["-level:v:0", formatted]
+        }
+        if let p = videoTrack.colorPrimaries, !p.isEmpty {
+            args += ["-color_primaries:v:0", p]
+        }
+        if let t = videoTrack.colorTransfer, !t.isEmpty {
+            args += ["-color_trc:v:0", t]
+        }
+        if let m = videoTrack.colorSpace, !m.isEmpty {
+            args += ["-colorspace:v:0", m]
+        }
+        if let tb = videoTrack.timeBase, !tb.isEmpty {
+            args += ["-video_track_timescale:v:0", tb.components(separatedBy: "/").last ?? "90000"]
+        }
+        
+        // Stitch alignment flags verified in FFmpeg 9.0.2 VideoToolbox
+        args += isLeadingEdge ? ["-frames_after:v:0", "1"] : ["-frames_before:v:0", "1"]
+        let outExt = outputURL.pathExtension.lowercased()
+        if outExt == "ts" || outExt == "m2ts" {
+            args += ["-bsf:v:0", "dump_extra", "-f", "mpegts"]
+        } else if isHEVC && isMP4Like {
+            args += ["-tag:v:0", "hvc1"]
+        }
+        args.append(outputURL.path)
+        return args
+    }
+    
+    /// Builds stitch arguments for concatenating v2.0 Smart-Cut MPEG-TS / Annex-B edge + copy slices.
+    public static func buildSmartCutStitchArguments(
+        concatListURL: URL,
+        isHEVC: Bool,
+        isMP4Like: Bool,
+        outputURL: URL
+    ) -> [String] {
+        var args: [String] = [
+            "-y", "-hide_banner",
+            "-f", "concat", "-safe", "0", "-i", concatListURL.path,
+            "-c", "copy",
+            "-bsf:v:0", "dump_extra",
+            "-avoid_negative_ts", "make_zero"
+        ]
+        if isHEVC && isMP4Like {
+            args += ["-tag:v:0", "hvc1"]
+        }
+        args.append(outputURL.path)
+        return args
     }
 }

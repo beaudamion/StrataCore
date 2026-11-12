@@ -1,8 +1,31 @@
 import Foundation
 
+public struct LoudnormMeasurement: Equatable, Codable, Sendable {
+    public let inputI: Double
+    public let inputTP: Double
+    public let inputLRA: Double
+    public let inputThresh: Double
+    public let targetOffset: Double
+    
+    public init(
+        inputI: Double,
+        inputTP: Double,
+        inputLRA: Double,
+        inputThresh: Double,
+        targetOffset: Double
+    ) {
+        self.inputI = inputI
+        self.inputTP = inputTP
+        self.inputLRA = inputLRA
+        self.inputThresh = inputThresh
+        self.targetOffset = targetOffset
+    }
+}
+
 public enum RemuxError: LocalizedError {
     case ffmpegNotFound
     case noTracksSelected
+    case unsafeDolbyVisionReencode(String)
     case executionFailed(String)
     case cancelled
     
@@ -12,6 +35,8 @@ public enum RemuxError: LocalizedError {
             return "ffmpeg binary not found. Please bundle static binaries or check configuration."
         case .noTracksSelected:
             return "Please select at least one video, audio, or subtitle track to multiplex."
+        case .unsafeDolbyVisionReencode(let msg):
+            return msg
         case .executionFailed(let msg):
             return "Remuxing failed: \(msg)"
         case .cancelled:
@@ -21,10 +46,18 @@ public enum RemuxError: LocalizedError {
 }
 
 public actor RemuxEngine {
+    private let coordinator: HardwareSessionCoordinator
     private var activeProcesses: [UUID: Process] = [:]
+    private var activeNativeEngine: NativeVideoToolboxEngine?
     private var isCancelled: Bool = false
     
-    public init() {}
+    public init(coordinator: HardwareSessionCoordinator = .shared) {
+        self.coordinator = coordinator
+    }
+    
+    private func setActiveNativeEngine(_ engine: NativeVideoToolboxEngine?) {
+        self.activeNativeEngine = engine
+    }
     
     private func registerProcess(_ process: Process, id: UUID) {
         activeProcesses[id] = process
@@ -34,12 +67,26 @@ public actor RemuxEngine {
         activeProcesses.removeValue(forKey: id)
     }
     
+    /// Validates that the planned execution graph does not violate Dolby Vision RPU safety rules.
+    public static func validateExecution(
+        for file: MediaFile,
+        options: RemuxOptions,
+        binaryCapabilities: FFmpegBinaryCapabilities = .assumedModernDefaults
+    ) throws {
+        let plan = ExecutionPlanner.plan(for: file, options: options, binaryCapabilities: binaryCapabilities)
+        if plan.requiresDolbyVisionGuard, let message = plan.dolbyVisionWarningMessage {
+            throw RemuxError.unsafeDolbyVisionReencode(message)
+        }
+    }
+    
     /// Builds ffmpeg arguments array based on MediaFile, RemuxOptions, and selected tracks.
     public static func buildArguments(
         for file: MediaFile,
         options: RemuxOptions,
         pass: Int? = nil,
-        passLogBaseURL: URL? = nil
+        passLogBaseURL: URL? = nil,
+        binaryCapabilities: FFmpegBinaryCapabilities = .assumedModernDefaults,
+        loudnessMeasurements: [UUID: LoudnormMeasurement] = [:]
     ) throws -> [String] {
         let selectedTracks = file.tracks.filter { $0.isSelected }
         guard !selectedTracks.isEmpty else {
@@ -51,12 +98,24 @@ public actor RemuxEngine {
         
         var args: [String] = ["-y", "-hide_banner"]
         
-        // Input 0: Primary source file (enable VideoToolbox hardware decode when transcoding primary video)
-        let primaryNeedsHWDecode = options.useHardwareAcceleration && activeTracks.contains {
+        // Input 0: Primary source file (enable VideoToolbox hardware decode & zero-copy VLD when eligible)
+        let primaryTranscodeVideos = activeTracks.filter {
             !$0.isExternal && $0.mediaType == .video && $0.action != .copy
         }
-        if primaryNeedsHWDecode {
-            args += ["-hwaccel", "videotoolbox"]
+        if options.useHardwareAcceleration, !primaryTranscodeVideos.isEmpty {
+            let allZeroCopyVLD = primaryTranscodeVideos.allSatisfy {
+                ExecutionPlanner.canUseZeroCopyVLD(
+                    for: $0,
+                    useHardwareAcceleration: options.useHardwareAcceleration,
+                    pass: pass,
+                    binaryCapabilities: binaryCapabilities
+                )
+            }
+            if allZeroCopyVLD {
+                args += ["-hwaccel", "videotoolbox", "-hwaccel_output_format", "videotoolbox_vld"]
+            } else {
+                args += ["-hwaccel", "videotoolbox"]
+            }
         }
         args += ["-i", file.url.path]
         
@@ -106,12 +165,18 @@ public actor RemuxEngine {
                     isMP4Like: isMP4Like,
                     pass: pass,
                     passLogBaseURL: passLogBaseURL,
-                    useHardwareAcceleration: options.useHardwareAcceleration
+                    useHardwareAcceleration: options.useHardwareAcceleration,
+                    binaryCapabilities: binaryCapabilities
                 )
                 videoOutIdx += 1
                 
             case .audio:
-                args += audioEncoderArguments(for: track, streamSpecifier: ":a:\(audioOutIdx)")
+                args += audioEncoderArguments(
+                    for: track,
+                    streamSpecifier: ":a:\(audioOutIdx)",
+                    binaryCapabilities: binaryCapabilities,
+                    loudnessMeasurement: loudnessMeasurements[track.id]
+                )
                 audioOutIdx += 1
                 
             case .subtitle:
@@ -187,12 +252,24 @@ public actor RemuxEngine {
         outputURL: URL,
         pass: Int? = nil,
         passLogBaseURL: URL? = nil,
-        useHardwareAcceleration: Bool = true
+        useHardwareAcceleration: Bool = true,
+        binaryCapabilities: FFmpegBinaryCapabilities = .assumedModernDefaults,
+        loudnessMeasurement: LoudnormMeasurement? = nil
     ) -> [String] {
         var args = ["-y", "-hide_banner"]
         
         if useHardwareAcceleration && track.mediaType == .video && track.action != .copy {
-            args += ["-hwaccel", "videotoolbox"]
+            let usesVLD = ExecutionPlanner.canUseZeroCopyVLD(
+                for: track,
+                useHardwareAcceleration: useHardwareAcceleration,
+                pass: pass,
+                binaryCapabilities: binaryCapabilities
+            )
+            if usesVLD {
+                args += ["-hwaccel", "videotoolbox", "-hwaccel_output_format", "videotoolbox_vld"]
+            } else {
+                args += ["-hwaccel", "videotoolbox"]
+            }
         }
         
         if track.isExternal, let extURL = track.externalURL {
@@ -212,10 +289,16 @@ public actor RemuxEngine {
                 isMP4Like: isMP4Like,
                 pass: pass,
                 passLogBaseURL: passLogBaseURL,
-                useHardwareAcceleration: useHardwareAcceleration
+                useHardwareAcceleration: useHardwareAcceleration,
+                binaryCapabilities: binaryCapabilities
             )
         case .audio:
-            args += audioEncoderArguments(for: track, streamSpecifier: ":a:0")
+            args += audioEncoderArguments(
+                for: track,
+                streamSpecifier: ":a:0",
+                binaryCapabilities: binaryCapabilities,
+                loudnessMeasurement: loudnessMeasurement
+            )
         case .subtitle:
             switch track.action {
             case .transcodeSRT:
@@ -279,24 +362,82 @@ public actor RemuxEngine {
         }
     }
     
+    private static func parseBitrateBps(_ raw: String) -> Int? {
+        let lower = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !lower.isEmpty, lower != "auto" else { return nil }
+        if lower.hasSuffix("m"), let val = Double(lower.dropLast()), val > 0 {
+            return Int((val * 1_000_000.0).rounded())
+        }
+        if lower.hasSuffix("k"), let val = Double(lower.dropLast()), val > 0 {
+            return Int((val * 1000.0).rounded())
+        }
+        if let val = Double(lower), val > 0 {
+            return Int((val * 1000.0).rounded())
+        }
+        return nil
+    }
+    
+    private static func mappedSoftwareCRF(for qualityScale: Int) -> Int {
+        let clamped = max(1, min(100, qualityScale))
+        // Maps 55->25, 65->22, 72->20, 80->17
+        return max(14, min(32, Int((43.0 - Double(clamped) * 0.32).rounded())))
+    }
+    
+    private static func doubleBitrateBufsize(from bitrate: String) -> String? {
+        let lower = bitrate.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if lower.hasSuffix("k"), let val = Int(lower.dropLast()), val > 0 {
+            return "\(val * 2)k"
+        }
+        if lower.hasSuffix("m"), let val = Double(lower.dropLast()), val > 0 {
+            return "\(Int((val * 2000.0).rounded()))k"
+        }
+        if let val = Int(lower), val > 0 {
+            return "\(val * 2)k"
+        }
+        return nil
+    }
+    
+    private static func resolvedOutputColorSpec(
+        for track: MediaTrack,
+        config: VideoEncodingConfig
+    ) -> (primaries: String?, transfer: String?, matrix: String?) {
+        if let cs = config.colorSpace, cs != .auto {
+            return (cs.ffPrimaries, cs.ffTransfer, cs.ffMatrix)
+        }
+        return (track.colorPrimaries, track.colorTransfer, track.colorSpace)
+    }
+    
     private static func videoEncoderArguments(
         for track: MediaTrack,
         streamSpecifier spec: String,
         isMP4Like: Bool,
         pass: Int?,
         passLogBaseURL: URL?,
-        useHardwareAcceleration: Bool
+        useHardwareAcceleration: Bool,
+        binaryCapabilities: FFmpegBinaryCapabilities = .assumedModernDefaults
     ) -> [String] {
         guard track.action != .copy else {
+            if isMP4Like && track.isHEVCCodec && track.hasHEV1Tag {
+                return ["-c\(spec)", "copy", "-tag\(spec)", "hvc1"]
+            }
             return ["-c\(spec)", "copy"]
         }
         
         let cfg = track.videoConfig
         var args: [String] = []
-        let useTwoPassEncoder = (cfg.multiPass || pass != nil) && (track.action == .transcodeH264_VT || track.action == .transcodeHEVC_VT)
+        let rcMode = cfg.effectiveRateControlMode
+        let useTwoPassEncoder = (pass != nil || rcMode == .twoPassVBR) && (track.action == .transcodeH264_VT || track.action == .transcodeHEVC_VT)
         let safeSpecTag = spec.replacingOccurrences(of: ":", with: "_")
         let pfLower = track.pixelFormat?.lowercased() ?? ""
         let hasAlpha = pfLower.contains("yuva") || pfLower.contains("rgba") || pfLower.contains("bgra") || pfLower.contains("argb") || pfLower.contains("abgr") || pfLower.contains("ayuv") || pfLower.contains("gbrap")
+        
+        let usesVLD = ExecutionPlanner.canUseZeroCopyVLD(
+            for: track,
+            useHardwareAcceleration: useHardwareAcceleration,
+            pass: pass,
+            binaryCapabilities: binaryCapabilities
+        )
+        let needsDeinterlace = ExecutionPlanner.shouldDeinterlace(track: track)
         
         var filterParts: [String] = []
         var setparamsParts: [String] = []
@@ -338,13 +479,39 @@ public actor RemuxEngine {
                 
                 args += ["-pix_fmt\(spec)", "yuv420p"]
                 if useTwoPassEncoder {
-                    args += ["-b\(spec)", resolvedMultiPassBitrate(for: track)]
-                } else if let br = normalizedBitrate(cfg.bitrate) {
+                    let targetBr = resolvedMultiPassBitrate(for: track)
+                    args += ["-b\(spec)", targetBr]
+                    if let maxBr = cfg.maxBitrate.flatMap({ normalizedBitrate($0) }) {
+                        args += ["-maxrate\(spec)", maxBr]
+                        if let buf = doubleBitrateBufsize(from: maxBr) {
+                            args += ["-bufsize\(spec)", buf]
+                        }
+                    }
+                } else if rcMode == .averageBitrate {
+                    let br = normalizedBitrate(cfg.bitrate) ?? resolvedMultiPassBitrate(for: track)
                     args += ["-b\(spec)", br]
+                    if let maxBr = cfg.maxBitrate.flatMap({ normalizedBitrate($0) }) {
+                        args += ["-maxrate\(spec)", maxBr]
+                        if let buf = doubleBitrateBufsize(from: maxBr) {
+                            args += ["-bufsize\(spec)", buf]
+                        }
+                    }
+                } else {
+                    args += ["-crf\(spec)", "\(mappedSoftwareCRF(for: cfg.qualityScale))"]
                 }
                 
                 if let kf = cfg.keyFrameInterval, kf > 0 {
                     args += ["-g\(spec)", "\(kf)"]
+                }
+                
+                if needsDeinterlace {
+                    filterParts.append("yadif=0:-1:1")
+                }
+                if let rotCPU = cfg.rotation.cpuFilterExpression {
+                    filterParts.append(rotCPU)
+                }
+                if let targetW = cfg.resizeOption.targetWidth {
+                    filterParts.append("scale=\(targetW):-2:flags=lanczos")
                 }
                 
                 if !isBaseline {
@@ -356,14 +523,12 @@ public actor RemuxEngine {
                         args += ["-flags\(spec)", "+ilme+ildct", "-field_order\(spec)", "bb", "-x264-params\(spec)", "bff=1"]
                         setparamsParts.append("field_mode=bff")
                     case .progressive:
-                        filterParts.append("yadif=0:-1:1")
                         setparamsParts.append("field_mode=prog")
                         args += ["-field_order\(spec)", "progressive"]
                     case .auto, .none:
                         break
                     }
                 } else {
-                    filterParts.append("yadif=0:-1:1")
                     setparamsParts.append("field_mode=prog")
                     args += ["-field_order\(spec)", "progressive"]
                 }
@@ -390,17 +555,46 @@ public actor RemuxEngine {
                 } else {
                     args += ["-bf\(spec)", "2"]
                 }
-                args += ["-pix_fmt\(spec)", "yuv420p", "-allow_sw\(spec)", "1"]
-                if let br = normalizedBitrate(cfg.bitrate) {
+                if !usesVLD {
+                    args += ["-pix_fmt\(spec)", "yuv420p"]
+                }
+                args += ["-allow_sw\(spec)", "1"]
+                if binaryCapabilities.h264VTSupportsRealtime {
+                    args += ["-realtime\(spec)", "0"]
+                }
+                if cfg.spatialAQ && binaryCapabilities.h264VTSupportsSpatialAQ {
+                    args += ["-spatial_aq\(spec)", "1"]
+                }
+                
+                if rcMode == .averageBitrate {
+                    let br = normalizedBitrate(cfg.bitrate) ?? resolvedMultiPassBitrate(for: track)
                     args += ["-b\(spec)", br]
+                    if let maxBr = cfg.maxBitrate.flatMap({ normalizedBitrate($0) }) {
+                        args += ["-maxrate\(spec)", maxBr]
+                        if let buf = doubleBitrateBufsize(from: maxBr) {
+                            args += ["-bufsize\(spec)", buf]
+                        }
+                    }
+                } else {
+                    args += ["-q\(spec)", "\(cfg.qualityScale)"]
                 }
                 if let kf = cfg.keyFrameInterval, kf > 0 {
                     args += ["-g\(spec)", "\(kf)"]
                 }
-                // VideoToolbox H.264 outputs progressive frames cleanly
-                filterParts.append("yadif=0:-1:1")
-                setparamsParts.append("field_mode=prog")
-                args += ["-field_order\(spec)", "progressive"]
+                
+                if !usesVLD {
+                    if needsDeinterlace {
+                        filterParts.append("yadif=0:-1:1")
+                    }
+                    if let rotCPU = cfg.rotation.cpuFilterExpression {
+                        filterParts.append(rotCPU)
+                    }
+                    if let targetW = cfg.resizeOption.targetWidth {
+                        filterParts.append("scale=\(targetW):-2:flags=lanczos")
+                    }
+                    setparamsParts.append("field_mode=prog")
+                    args += ["-field_order\(spec)", "progressive"]
+                }
             }
             
         case .transcodeHEVC_VT:
@@ -430,28 +624,59 @@ public actor RemuxEngine {
                 }
                 
                 if useTwoPassEncoder {
-                    args += ["-b\(spec)", resolvedMultiPassBitrate(for: track)]
-                } else if let br = normalizedBitrate(cfg.bitrate) {
+                    let targetBr = resolvedMultiPassBitrate(for: track)
+                    args += ["-b\(spec)", targetBr]
+                } else if rcMode == .averageBitrate {
+                    let br = normalizedBitrate(cfg.bitrate) ?? resolvedMultiPassBitrate(for: track)
                     args += ["-b\(spec)", br]
+                } else {
+                    args += ["-crf\(spec)", "\(mappedSoftwareCRF(for: cfg.qualityScale))"]
                 }
                 
                 if let kf = cfg.keyFrameInterval, kf > 0 {
                     args += ["-g\(spec)", "\(kf)"]
                 }
                 
+                if needsDeinterlace {
+                    filterParts.append("yadif=0:-1:1")
+                }
+                if let rotCPU = cfg.rotation.cpuFilterExpression {
+                    filterParts.append(rotCPU)
+                }
+                if let targetW = cfg.resizeOption.targetWidth {
+                    filterParts.append("scale=\(targetW):-2:flags=lanczos")
+                }
+                setparamsParts.append("field_mode=prog")
+                args += ["-field_order\(spec)", "progressive"]
+                
+                var x265Params: [String] = []
                 if let p = pass, (p == 1 || p == 2) {
+                    x265Params.append("pass=\(p)")
                     if let baseURL = passLogBaseURL {
                         let statsFile = baseURL.appendingPathComponent("x265\(safeSpecTag).log").path
-                        args += ["-x265-params\(spec)", "pass=\(p):stats=\(statsFile)"]
-                    } else {
-                        args += ["-x265-params\(spec)", "pass=\(p)"]
+                        x265Params.append("stats=\(statsFile)")
                     }
+                }
+                if let md = track.masteringDisplay?.x265MasterDisplayParameter {
+                    x265Params.append("master-display=\(md)")
+                }
+                if let cll = track.contentLightLevel?.x265MaxCLLParameter {
+                    x265Params.append("max-cll=\(cll)")
+                }
+                if !x265Params.isEmpty {
+                    args += ["-x265-params\(spec)", x265Params.joined(separator: ":")]
                 }
             } else {
                 args += ["-c\(spec)", "hevc_videotoolbox"]
                 let alphaEligible = (validProf == nil || validProf == "main") && cfg.preserveAlpha && hasAlpha
                 
-                if alphaEligible {
+                if usesVLD {
+                    if let prof = validProf {
+                        args += ["-profile\(spec)", prof]
+                    } else if pfLower.contains("10") {
+                        args += ["-profile\(spec)", "main10"]
+                    }
+                } else if alphaEligible {
                     if validProf == "main" {
                         args += ["-profile\(spec)", "main"]
                     }
@@ -471,19 +696,43 @@ public actor RemuxEngine {
                 }
                 
                 args += ["-bf\(spec)", cfg.allowFrameReordering ? "2" : "0", "-allow_sw\(spec)", "1"]
+                if binaryCapabilities.hevcVTSupportsRealtime {
+                    args += ["-realtime\(spec)", "0"]
+                }
+                if cfg.spatialAQ && binaryCapabilities.hevcVTSupportsSpatialAQ {
+                    args += ["-spatial_aq\(spec)", "1"]
+                }
                 
-                if let br = normalizedBitrate(cfg.bitrate) {
+                if rcMode == .averageBitrate {
+                    let br = normalizedBitrate(cfg.bitrate) ?? resolvedMultiPassBitrate(for: track)
                     args += ["-b\(spec)", br]
+                    if let maxBr = cfg.maxBitrate.flatMap({ normalizedBitrate($0) }) {
+                        args += ["-maxrate\(spec)", maxBr]
+                        if let buf = doubleBitrateBufsize(from: maxBr) {
+                            args += ["-bufsize\(spec)", buf]
+                        }
+                    }
+                } else {
+                    args += ["-q\(spec)", "\(cfg.qualityScale)"]
                 }
                 if let kf = cfg.keyFrameInterval, kf > 0 {
                     args += ["-g\(spec)", "\(kf)"]
                 }
+                
+                if !usesVLD {
+                    if needsDeinterlace {
+                        filterParts.append("yadif=0:-1:1")
+                    }
+                    if let rotCPU = cfg.rotation.cpuFilterExpression {
+                        filterParts.append(rotCPU)
+                    }
+                    if let targetW = cfg.resizeOption.targetWidth {
+                        filterParts.append("scale=\(targetW):-2:flags=lanczos")
+                    }
+                    setparamsParts.append("field_mode=prog")
+                    args += ["-field_order\(spec)", "progressive"]
+                }
             }
-            
-            // HEVC enforces progressive frames cleanly
-            filterParts.append("yadif=0:-1:1")
-            setparamsParts.append("field_mode=prog")
-            args += ["-field_order\(spec)", "progressive"]
             
             if isMP4Like && pass != 1 {
                 args += ["-tag\(spec)", "hvc1"]
@@ -494,35 +743,50 @@ public actor RemuxEngine {
             let profile = cfg.profile.flatMap { validProResProfiles.contains($0) ? $0 : nil } ?? "2"
             let canPreserveAlpha = (profile == "4" || profile == "5") && cfg.preserveAlpha && hasAlpha
             if useHardwareAcceleration {
-                let pixFmt = (profile == "4" || profile == "5")
-                    ? (canPreserveAlpha ? "ayuv64le" : "p410le")
-                    : "p210le"
-                args += [
-                    "-c\(spec)", "prores_videotoolbox",
-                    "-profile\(spec)", profile,
-                    "-pix_fmt\(spec)", pixFmt,
-                    "-allow_sw\(spec)", "1"
-                ]
+                args += ["-c\(spec)", "prores_videotoolbox", "-profile\(spec)", profile]
+                if !usesVLD {
+                    let pixFmt = (profile == "4" || profile == "5")
+                        ? (canPreserveAlpha ? "ayuv64le" : "p410le")
+                        : "p210le"
+                    args += ["-pix_fmt\(spec)", pixFmt]
+                }
+                args += ["-allow_sw\(spec)", "1"]
+                if binaryCapabilities.proResVTSupportsVendor {
+                    args += ["-vendor\(spec)", "apl0"]
+                }
             } else {
                 let pixFmt = (profile == "4" || profile == "5")
                     ? (canPreserveAlpha ? "yuva444p10le" : "yuv444p10le")
                     : "yuv422p10le"
                 args += ["-c\(spec)", "prores_ks", "-profile\(spec)", profile, "-pix_fmt\(spec)", pixFmt]
+                if binaryCapabilities.proResKsSupportsVendor {
+                    args += ["-vendor\(spec)", "apl0"]
+                }
             }
             
-            switch cfg.fieldOrder {
-            case .topFirst:
-                args += ["-flags\(spec)", "+ilme+ildct", "-field_order\(spec)", "tt"]
-                setparamsParts.append("field_mode=tff")
-            case .bottomFirst:
-                args += ["-flags\(spec)", "+ilme+ildct", "-field_order\(spec)", "bb"]
-                setparamsParts.append("field_mode=bff")
-            case .progressive:
-                filterParts.append("yadif=0:-1:1")
-                setparamsParts.append("field_mode=prog")
-                args += ["-field_order\(spec)", "progressive"]
-            case .auto, .none:
-                break
+            if !usesVLD {
+                if needsDeinterlace {
+                    filterParts.append("yadif=0:-1:1")
+                }
+                if let rotCPU = cfg.rotation.cpuFilterExpression {
+                    filterParts.append(rotCPU)
+                }
+                if let targetW = cfg.resizeOption.targetWidth {
+                    filterParts.append("scale=\(targetW):-2:flags=lanczos")
+                }
+                switch cfg.fieldOrder {
+                case .topFirst:
+                    args += ["-flags\(spec)", "+ilme+ildct", "-field_order\(spec)", "tt"]
+                    setparamsParts.append("field_mode=tff")
+                case .bottomFirst:
+                    args += ["-flags\(spec)", "+ilme+ildct", "-field_order\(spec)", "bb"]
+                    setparamsParts.append("field_mode=bff")
+                case .progressive:
+                    setparamsParts.append("field_mode=prog")
+                    args += ["-field_order\(spec)", "progressive"]
+                case .auto, .none:
+                    break
+                }
             }
             
         default:
@@ -536,28 +800,52 @@ public actor RemuxEngine {
             args += ["-r\(spec)", fps]
         }
         
-        if let cs = cfg.colorSpace,
-           cs != .auto,
-           let p = cs.ffPrimaries,
-           let t = cs.ffTransfer,
-           let m = cs.ffMatrix {
-            setparamsParts += [
-                "color_primaries=\(p)",
-                "color_trc=\(t)",
-                "colorspace=\(m)"
-            ]
-            args += [
-                "-color_primaries\(spec)", p,
-                "-color_trc\(spec)", t,
-                "-colorspace\(spec)", m
-            ]
-        }
-        
-        if !setparamsParts.isEmpty {
-            filterParts.append("setparams=" + setparamsParts.joined(separator: ":"))
-        }
-        if !filterParts.isEmpty {
-            args += ["-filter\(spec)", filterParts.joined(separator: ",")]
+        if usesVLD {
+            var vtFilters: [String] = []
+            if needsDeinterlace {
+                vtFilters.append("yadif_videotoolbox=mode=send_frame:parity=auto:deint=interlaced")
+            }
+            if let dir = cfg.rotation.transposeVTDir {
+                vtFilters.append("transpose_vt=dir=\(dir)")
+            }
+            var scaleVTOpts: [String] = []
+            if let targetW = cfg.resizeOption.targetWidth {
+                scaleVTOpts.append("w=\(targetW)")
+                scaleVTOpts.append("h=-2")
+            }
+            if let cs = cfg.colorSpace, cs != .auto {
+                if let p = cs.ffPrimaries { scaleVTOpts.append("color_primaries=\(p)") }
+                if let t = cs.ffTransfer { scaleVTOpts.append("color_transfer=\(t)") }
+                if let m = cs.ffMatrix { scaleVTOpts.append("color_matrix=\(m)") }
+            }
+            if !scaleVTOpts.isEmpty {
+                vtFilters.append("scale_vt=" + scaleVTOpts.joined(separator: ":"))
+            }
+            if !vtFilters.isEmpty {
+                args += ["-filter\(spec)", vtFilters.joined(separator: ",")]
+            }
+        } else {
+            let colorSpec = resolvedOutputColorSpec(for: track, config: cfg)
+            let explicitColorRequested = (cfg.colorSpace != nil && cfg.colorSpace != .auto)
+            if let p = colorSpec.primaries, !p.isEmpty {
+                if explicitColorRequested { setparamsParts.append("color_primaries=\(p)") }
+                args += ["-color_primaries\(spec)", p]
+            }
+            if let t = colorSpec.transfer, !t.isEmpty {
+                if explicitColorRequested { setparamsParts.append("color_trc=\(t)") }
+                args += ["-color_trc\(spec)", t]
+            }
+            if let m = colorSpec.matrix, !m.isEmpty {
+                if explicitColorRequested { setparamsParts.append("colorspace=\(m)") }
+                args += ["-colorspace\(spec)", m]
+            }
+            
+            if !setparamsParts.isEmpty {
+                filterParts.append("setparams=" + setparamsParts.joined(separator: ":"))
+            }
+            if !filterParts.isEmpty {
+                args += ["-filter\(spec)", filterParts.joined(separator: ",")]
+            }
         }
         
         return args
@@ -565,15 +853,28 @@ public actor RemuxEngine {
     
     private static func audioEncoderArguments(
         for track: MediaTrack,
-        streamSpecifier spec: String
+        streamSpecifier spec: String,
+        binaryCapabilities: FFmpegBinaryCapabilities = .assumedModernDefaults,
+        loudnessMeasurement: LoudnormMeasurement? = nil
     ) -> [String] {
         var args: [String] = []
         switch track.action {
         case .copy:
             return ["-c\(spec)", "copy"]
         case .transcodeAAC_Stereo, .transcodeAAC_51:
-            let br = track.audioConfig.bitrate.isEmpty ? (track.action == .transcodeAAC_51 ? "384k" : "192k") : track.audioConfig.bitrate
-            args += ["-c\(spec)", "aac", "-b\(spec)", br]
+            let fallbackBr = (track.action == .transcodeAAC_51) ? "384k" : "192k"
+            let explicitBr = track.audioConfig.bitrate.trimmingCharacters(in: .whitespacesAndNewlines)
+            let br = explicitBr.isEmpty ? fallbackBr : explicitBr
+            if binaryCapabilities.supportsAudioToolboxAAC {
+                args += ["-c\(spec)", "aac_at", "-aac_at_mode\(spec)", track.audioConfig.aacMode.rawValue]
+                if track.audioConfig.aacMode == .vbrQuality {
+                    args += ["-q\(spec)", "\(track.audioConfig.aacQuality)"]
+                } else {
+                    args += ["-b\(spec)", br]
+                }
+            } else {
+                args += ["-c\(spec)", "aac", "-b\(spec)", br]
+            }
         case .transcodeMP3:
             args += ["-c\(spec)", "libmp3lame"]
             if track.audioConfig.isVBR {
@@ -629,16 +930,106 @@ public actor RemuxEngine {
             return ["-c\(spec)", "copy"]
         }
         
+        let targetLoudness = track.audioConfig.loudnessTarget
+        if targetLoudness != .off,
+           binaryCapabilities.supportsLoudnorm,
+           let targetLUFS = targetLoudness.integratedLUFS {
+            let loudFilter: String
+            if let measured = loudnessMeasurement {
+                loudFilter = String(
+                    format: "loudnorm=I=%.1f:TP=%.1f:LRA=%.1f:measured_I=%.2f:measured_TP=%.2f:measured_LRA=%.2f:measured_thresh=%.2f:offset=%.2f:linear=true:print_format=summary",
+                    targetLUFS,
+                    targetLoudness.truePeakDBTP,
+                    targetLoudness.lraTarget,
+                    measured.inputI,
+                    measured.inputTP,
+                    measured.inputLRA,
+                    measured.inputThresh,
+                    measured.targetOffset
+                )
+            } else {
+                loudFilter = String(
+                    format: "loudnorm=I=%.1f:TP=%.1f:LRA=%.1f",
+                    targetLUFS,
+                    targetLoudness.truePeakDBTP,
+                    targetLoudness.lraTarget
+                )
+            }
+            args += ["-af\(spec)", loudFilter]
+        }
+        
         // Channel downmixing / remixing if specified
         if let ch = track.audioConfig.channels {
             args += ["-ac\(spec)", "\(ch)"]
         }
-        // Custom sample rate if specified
+        // Sample rate (forced whenever explicit SR OR loudnorm active so 192 kHz loudnorm upsampling never breaks encoders)
         if let sr = track.audioConfig.sampleRate {
             args += ["-ar\(spec)", sr]
+        } else if targetLoudness != .off && binaryCapabilities.supportsLoudnorm {
+            let fallbackSR = track.sampleRate ?? "48000"
+            args += ["-ar\(spec)", fallbackSR]
         }
         
         return args
+    }
+    
+    /// Builds Pass-1 EBU R128 loudness analysis arguments for a single audio track.
+    public static func buildLoudnormAnalysisArguments(
+        for file: MediaFile,
+        track: MediaTrack
+    ) -> [String]? {
+        let target = track.audioConfig.loudnessTarget
+        guard track.mediaType == .audio,
+              track.action != .copy,
+              target != .off,
+              let targetLUFS = target.integratedLUFS else {
+            return nil
+        }
+        let inputURL = (track.isExternal ? track.externalURL : nil) ?? file.url
+        let filter = String(
+            format: "loudnorm=I=%.1f:TP=%.1f:LRA=%.1f:print_format=json",
+            targetLUFS,
+            target.truePeakDBTP,
+            target.lraTarget
+        )
+        return [
+            "-hide_banner", "-nostats",
+            "-i", inputURL.path,
+            "-map", "0:\(track.streamIndex)",
+            "-af", filter,
+            "-vn", "-sn", "-dn",
+            "-f", "null", "-"
+        ]
+    }
+    
+    /// Parses JSON summary emitted by FFmpeg's `loudnorm=print_format=json`.
+    public static func parseLoudnormJSON(from stderr: String) -> LoudnormMeasurement? {
+        guard let endIdx = stderr.lastIndex(of: "}") else { return nil }
+        guard let startIdx = stderr[..<endIdx].lastIndex(of: "{") else { return nil }
+        let jsonString = String(stderr[startIdx...endIdx])
+        guard let data = jsonString.data(using: .utf8),
+              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        func dbl(_ key: String) -> Double? {
+            if let d = dict[key] as? Double { return d }
+            if let s = dict[key] as? String { return Double(s) }
+            return nil
+        }
+        guard let i = dbl("input_i"),
+              let tp = dbl("input_tp"),
+              let lra = dbl("input_lra"),
+              let thresh = dbl("input_thresh"),
+              let offset = dbl("target_offset") else {
+            return nil
+        }
+        return LoudnormMeasurement(
+            inputI: i,
+            inputTP: tp,
+            inputLRA: lra,
+            inputThresh: thresh,
+            targetOffset: offset
+        )
     }
     
     // MARK: - Segmented Export Argument Builders
@@ -676,7 +1067,8 @@ public actor RemuxEngine {
         videoTrack: MediaTrack,
         boundary: VideoSegmentBoundary,
         options: RemuxOptions,
-        chunkOutputURL: URL
+        chunkOutputURL: URL,
+        binaryCapabilities: FFmpegBinaryCapabilities = .assumedModernDefaults
     ) -> [String] {
         var args: [String] = ["-y", "-hide_banner"]
         
@@ -684,7 +1076,17 @@ public actor RemuxEngine {
             args += ["-ss", String(format: "%.6f", seekTime)]
         }
         if options.useHardwareAcceleration {
-            args += ["-hwaccel", "videotoolbox"]
+            let usesVLD = ExecutionPlanner.canUseZeroCopyVLD(
+                for: videoTrack,
+                useHardwareAcceleration: options.useHardwareAcceleration,
+                pass: nil,
+                binaryCapabilities: binaryCapabilities
+            )
+            if usesVLD {
+                args += ["-hwaccel", "videotoolbox", "-hwaccel_output_format", "videotoolbox_vld"]
+            } else {
+                args += ["-hwaccel", "videotoolbox"]
+            }
         }
         
         args += ["-i", file.url.path]
@@ -702,7 +1104,8 @@ public actor RemuxEngine {
             isMP4Like: isMP4Like,
             pass: nil,
             passLogBaseURL: nil,
-            useHardwareAcceleration: options.useHardwareAcceleration
+            useHardwareAcceleration: options.useHardwareAcceleration,
+            binaryCapabilities: binaryCapabilities
         )
         
         args.append(chunkOutputURL.path)
@@ -713,7 +1116,9 @@ public actor RemuxEngine {
         for file: MediaFile,
         nonVideoTracks: [MediaTrack],
         options: RemuxOptions,
-        sidecarOutputURL: URL
+        sidecarOutputURL: URL,
+        binaryCapabilities: FFmpegBinaryCapabilities = .assumedModernDefaults,
+        loudnessMeasurements: [UUID: LoudnormMeasurement] = [:]
     ) -> [String] {
         var args: [String] = ["-y", "-hide_banner", "-i", file.url.path]
         
@@ -743,7 +1148,12 @@ public actor RemuxEngine {
         for track in nonVideoTracks {
             switch track.mediaType {
             case .audio:
-                args += audioEncoderArguments(for: track, streamSpecifier: ":a:\(audioOutIdx)")
+                args += audioEncoderArguments(
+                    for: track,
+                    streamSpecifier: ":a:\(audioOutIdx)",
+                    binaryCapabilities: binaryCapabilities,
+                    loudnessMeasurement: loudnessMeasurements[track.id]
+                )
                 audioOutIdx += 1
             case .subtitle:
                 if isMP4Like {
@@ -773,7 +1183,9 @@ public actor RemuxEngine {
         for file: MediaFile,
         concatListURL: URL,
         sidecarAudioSubURL: URL?,
-        options: RemuxOptions
+        options: RemuxOptions,
+        binaryCapabilities: FFmpegBinaryCapabilities = .assumedModernDefaults,
+        usesAnnexBChunks: Bool = false
     ) throws -> [String] {
         let selectedTracks = file.tracks.filter { $0.isSelected }
         guard !selectedTracks.isEmpty else {
@@ -822,12 +1234,22 @@ public actor RemuxEngine {
             }
         }
         
-        args += ["-c", "copy"]
+        args += ["-c", "copy", "-avoid_negative_ts", "make_zero"]
         
         let isMP4Like = (options.targetContainer == .mp4 || options.targetContainer == .m4v || options.targetContainer == .mov)
-        if isMP4Like, let videoTrack = selectedTracks.first(where: { $0.mediaType == .video }),
-           videoTrack.action == .transcodeHEVC_VT {
-            args += ["-tag:v:0", "hvc1"]
+        if let videoTrack = selectedTracks.first(where: { $0.mediaType == .video }) {
+            let isH264OrHEVC = videoTrack.action == .transcodeH264_VT
+                || videoTrack.action == .transcodeHEVC_VT
+                || videoTrack.isHEVCCodec
+                || videoTrack.codecName.lowercased().contains("h264")
+                || videoTrack.codecName.lowercased().contains("avc")
+            // `dump_extra` is strictly for Annex-B / MPEG-TS chunks; applying it to length-prefixed MP4/MKV chunks corrupts NAL length prefixes.
+            if usesAnnexBChunks && binaryCapabilities.supportsDumpExtraBSF && isH264OrHEVC {
+                args += ["-bsf:v:0", "dump_extra"]
+            }
+            if isMP4Like && (videoTrack.action == .transcodeHEVC_VT || (videoTrack.action == .copy && videoTrack.isHEVCCodec && videoTrack.hasHEV1Tag)) {
+                args += ["-tag:v:0", "hvc1"]
+            }
         }
         
         for (totalOutIdx, track) in selectedTracks.enumerated() {
@@ -876,6 +1298,7 @@ public actor RemuxEngine {
         activeSegments: Int? = nil,
         phaseLabel: String? = nil,
         notice: String? = nil,
+        executionTierLabel: String? = nil,
         continuation: AsyncStream<RemuxProgress>.Continuation
     ) async -> Int32 {
         let processID = UUID()
@@ -937,7 +1360,8 @@ public actor RemuxEngine {
                                 remainingSeconds: update.remainingSeconds,
                                 activeSegments: activeSegments,
                                 phaseLabel: phaseLabel,
-                                notice: notice
+                                notice: notice,
+                                executionTierLabel: executionTierLabel
                             ))
                         }
                         lineBuffer.removeAll(keepingCapacity: true)
@@ -967,7 +1391,8 @@ public actor RemuxEngine {
                     remainingSeconds: update.remainingSeconds,
                     activeSegments: activeSegments,
                     phaseLabel: phaseLabel,
-                    notice: notice
+                    notice: notice,
+                    executionTierLabel: executionTierLabel
                 ))
             }
         }
@@ -981,6 +1406,115 @@ public actor RemuxEngine {
         let finalStatus = exitStatus ?? (process.isRunning ? -1 : process.terminationStatus)
         unregisterProcess(id: processID)
         return finalStatus
+    }
+    
+    private func measureLoudnorm(
+        for file: MediaFile,
+        track: MediaTrack,
+        ffmpegPath: String
+    ) async -> LoudnormMeasurement? {
+        guard !self.isCancelled,
+              let args = Self.buildLoudnormAnalysisArguments(for: file, track: track) else {
+            return nil
+        }
+        
+        let processID = UUID()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: ffmpegPath)
+        process.arguments = args
+        let stderrPipe = Pipe()
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = stderrPipe
+        
+        let (terminationStream, terminationContinuation) = AsyncStream<Int32>.makeStream()
+        process.terminationHandler = { terminatedProcess in
+            terminatedProcess.terminationHandler = nil
+            terminationContinuation.yield(terminatedProcess.terminationStatus)
+            terminationContinuation.finish()
+        }
+        registerProcess(process, id: processID)
+        
+        do {
+            try process.run()
+        } catch {
+            process.terminationHandler = nil
+            terminationContinuation.finish()
+            unregisterProcess(id: processID)
+            return nil
+        }
+        
+        if self.isCancelled {
+            if process.isRunning { process.terminate() }
+            unregisterProcess(id: processID)
+            return nil
+        }
+        
+        var errData = Data()
+        do {
+            for try await byteData in stderrPipe.fileHandleForReading.bytes {
+                if self.isCancelled { break }
+                errData.append(byteData)
+            }
+        } catch {
+            // Stream read terminated
+        }
+        
+        var exitStatus: Int32?
+        for await status in terminationStream {
+            exitStatus = status
+            break
+        }
+        process.terminationHandler = nil
+        unregisterProcess(id: processID)
+        
+        guard !self.isCancelled,
+              exitStatus == 0,
+              let stderrText = String(data: errData, encoding: .utf8) else {
+            return nil
+        }
+        return Self.parseLoudnormJSON(from: stderrText)
+    }
+    
+    private func evaluatePerceptualQCIfNeeded(
+        file: MediaFile,
+        options: RemuxOptions,
+        ffmpegPath: String,
+        binaryCapabilities: FFmpegBinaryCapabilities,
+        executionTierLabel: String?,
+        continuation: AsyncStream<RemuxProgress>.Continuation
+    ) async -> PerceptualQCResult? {
+        guard !self.isCancelled,
+              options.perceptualQCMetric != .none else {
+            return nil
+        }
+        let hasTranscodedVideo = file.tracks.contains {
+            $0.isSelected && $0.mediaType == .video && $0.action != .copy
+        }
+        guard hasTranscodedVideo else { return nil }
+        if options.perceptualQCMetric == .xpsnr && !binaryCapabilities.supportsXPSNR {
+            return nil
+        }
+        if options.perceptualQCMetric == .libvmaf && !binaryCapabilities.supportsLibVMAF {
+            return nil
+        }
+        
+        continuation.yield(RemuxProgress(
+            progress: 0.97,
+            currentTime: file.duration,
+            totalTime: file.duration,
+            speed: "QC...",
+            activeSegments: 1,
+            phaseLabel: "Running \(options.perceptualQCMetric.shortLabel) QC...",
+            executionTierLabel: executionTierLabel
+        ))
+        
+        return await PerceptualQCRunner.evaluate(
+            distortedURL: options.outputURL,
+            referenceURL: file.url,
+            metric: options.perceptualQCMetric,
+            ffmpegPath: ffmpegPath
+        )
     }
     
     private func runWorkerFFmpeg(
@@ -1085,11 +1619,115 @@ public actor RemuxEngine {
                 let parentDir = options.outputURL.deletingLastPathComponent()
                 try? FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
                 
+                let binCaps = await BinaryCapabilityProbe.shared.capabilities(for: ffmpegPath)
+                let plan = ExecutionPlanner.plan(for: file, options: options, binaryCapabilities: binCaps)
+                
+                if plan.requiresDolbyVisionGuard {
+                    continuation.yield(RemuxProgress(
+                        progress: 0.0,
+                        currentTime: 0,
+                        totalTime: file.duration,
+                        speed: "Blocked",
+                        activeSegments: 1,
+                        phaseLabel: "Dolby Vision Guard",
+                        notice: plan.dolbyVisionWarningMessage ?? "Dolby Vision transcode blocked to protect RPU dynamic metadata.",
+                        executionTierLabel: plan.badgeTitle
+                    ))
+                    continuation.finish()
+                    return
+                }
+                
                 let capabilities: HardwareMediaCapabilities
                 if let override = capabilitiesOverride {
                     capabilities = override
                 } else {
-                    capabilities = await HardwareCapabilities.detectWithCoordinator()
+                    capabilities = await HardwareCapabilities.detectWithCoordinator(self.coordinator)
+                }
+                
+                let selectedTracks = file.tracks.filter { $0.isSelected }
+                
+                // Pass 1 for any selected audio track with EBU R128 loudness normalization enabled
+                var loudnessMeasurements: [UUID: LoudnormMeasurement] = [:]
+                let tracksNeedingLoudnorm = selectedTracks.filter {
+                    $0.mediaType == .audio && $0.action != .copy && $0.audioConfig.loudnessTarget != .off
+                }
+                if !tracksNeedingLoudnorm.isEmpty && binCaps.supportsLoudnorm && !self.isCancelled {
+                    continuation.yield(RemuxProgress(
+                        progress: 0.0,
+                        currentTime: 0,
+                        totalTime: file.duration,
+                        speed: "Analyzing...",
+                        activeSegments: 1,
+                        phaseLabel: "Measuring EBU R128 Loudness...",
+                        executionTierLabel: plan.badgeTitle
+                    ))
+                    for audioTrack in tracksNeedingLoudnorm {
+                        if self.isCancelled { break }
+                        if let measurement = await self.measureLoudnorm(for: file, track: audioTrack, ffmpegPath: ffmpegPath) {
+                            loudnessMeasurements[audioTrack.id] = measurement
+                        }
+                    }
+                    if self.isCancelled {
+                        continuation.finish()
+                        return
+                    }
+                }
+                
+                // Route eligible VideoToolbox 2-Pass VBR jobs through Native Swift AVAssetReader/VTCompressionSession
+                if plan.usesNativeVideoToolbox,
+                   let videoTrack = selectedTracks.first(where: { $0.mediaType == .video }) {
+                    let targetStr = Self.resolvedMultiPassBitrate(for: videoTrack)
+                    let targetBps = Self.parseBitrateBps(targetStr) ?? 8_000_000
+                    let maxBps = videoTrack.videoConfig.maxBitrate.flatMap { Self.parseBitrateBps($0) }
+                    
+                    await self.coordinator.acquire(family: .ave, count: 1)
+                    let nativeEngine = NativeVideoToolboxEngine()
+                    self.setActiveNativeEngine(nativeEngine)
+                    let nativeResult = await nativeEngine.runTwoPassEncode(
+                        file: file,
+                        videoTrack: videoTrack,
+                        options: options,
+                        targetBitrateBps: targetBps,
+                        maxBitrateBps: maxBps,
+                        notice: plan.reasonSummary
+                    ) { update in
+                        continuation.yield(update)
+                    }
+                    self.setActiveNativeEngine(nil)
+                    await self.coordinator.release(family: .ave, count: 1)
+                    
+                    if nativeResult.succeeded && !self.isCancelled {
+                        let qcResult = await self.evaluatePerceptualQCIfNeeded(
+                            file: file,
+                            options: options,
+                            ffmpegPath: ffmpegPath,
+                            binaryCapabilities: binCaps,
+                            executionTierLabel: plan.badgeTitle,
+                            continuation: continuation
+                        )
+                        if qcResult != nil || nativeResult.pixelBufferPoolShared {
+                            continuation.yield(RemuxProgress(
+                                progress: 1.0,
+                                currentTime: file.duration,
+                                totalTime: file.duration,
+                                speed: "Done",
+                                activeSegments: 1,
+                                phaseLabel: nil,
+                                notice: plan.reasonSummary,
+                                executionTierLabel: plan.badgeTitle,
+                                qcSummary: qcResult?.summary,
+                                pixelBufferPoolShared: nativeResult.pixelBufferPoolShared
+                            ))
+                        }
+                        continuation.finish()
+                        return
+                    }
+                    
+                    if self.isCancelled {
+                        try? FileManager.default.removeItem(at: options.outputURL)
+                        continuation.finish()
+                        return
+                    }
                 }
                 
                 let decision = HardwareCapabilities.resolveSegmentation(
@@ -1098,10 +1736,9 @@ public actor RemuxEngine {
                     capabilities: capabilities
                 )
                 
-                let selectedTracks = file.tracks.filter { $0.isSelected }
                 let needsTwoPass = selectedTracks.contains {
                     $0.mediaType == .video &&
-                    $0.videoConfig.multiPass &&
+                    ($0.videoConfig.multiPass || $0.videoConfig.effectiveRateControlMode == .twoPassVBR) &&
                     ($0.action == .transcodeH264_VT || $0.action == .transcodeHEVC_VT)
                 }
                 
@@ -1129,6 +1766,9 @@ public actor RemuxEngine {
                             options: options,
                             decision: decision,
                             ffmpegPath: ffmpegPath,
+                            binaryCapabilities: binCaps,
+                            loudnessMeasurements: loudnessMeasurements,
+                            executionTierLabel: plan.badgeTitle,
                             continuation: continuation
                         )
                         continuation.finish()
@@ -1142,6 +1782,9 @@ public actor RemuxEngine {
                             ffmpegPath: ffmpegPath,
                             family: decision.engineFamily,
                             notice: sparseNotice,
+                            binaryCapabilities: binCaps,
+                            loudnessMeasurements: loudnessMeasurements,
+                            executionTierLabel: plan.badgeTitle,
                             continuation: continuation
                         )
                         continuation.finish()
@@ -1155,7 +1798,10 @@ public actor RemuxEngine {
                     needsTwoPass: needsTwoPass,
                     ffmpegPath: ffmpegPath,
                     family: decision.engineFamily,
-                    notice: decision.notice,
+                    notice: decision.notice ?? plan.reasonSummary,
+                    binaryCapabilities: binCaps,
+                    loudnessMeasurements: loudnessMeasurements,
+                    executionTierLabel: plan.badgeTitle,
                     continuation: continuation
                 )
                 
@@ -1171,11 +1817,14 @@ public actor RemuxEngine {
         ffmpegPath: String,
         family: MediaEngineFamily?,
         notice: String?,
+        binaryCapabilities: FFmpegBinaryCapabilities,
+        loudnessMeasurements: [UUID: LoudnormMeasurement],
+        executionTierLabel: String?,
         continuation: AsyncStream<RemuxProgress>.Continuation
     ) async {
         let duration = file.duration
         if let fam = family {
-            await HardwareSessionCoordinator.shared.acquire(family: fam, count: 1)
+            await self.coordinator.acquire(family: fam, count: 1)
         }
         
         if let notice {
@@ -1185,11 +1834,13 @@ public actor RemuxEngine {
                 totalTime: duration,
                 speed: "Starting...",
                 activeSegments: 1,
-                phaseLabel: "Single Stream",
-                notice: notice
+                phaseLabel: executionTierLabel ?? "Single Stream",
+                notice: notice,
+                executionTierLabel: executionTierLabel
             ))
         }
         
+        var encodeSucceeded = false
         if needsTwoPass {
             let passLogDir = FileManager.default.temporaryDirectory
                 .appendingPathComponent("strata_2pass_\(UUID().uuidString)")
@@ -1198,8 +1849,22 @@ public actor RemuxEngine {
                 try? FileManager.default.removeItem(at: passLogDir)
             }
             
-            if let pass1Args = try? Self.buildArguments(for: file, options: options, pass: 1, passLogBaseURL: passLogDir),
-               let pass2Args = try? Self.buildArguments(for: file, options: options, pass: 2, passLogBaseURL: passLogDir) {
+            if let pass1Args = try? Self.buildArguments(
+                for: file,
+                options: options,
+                pass: 1,
+                passLogBaseURL: passLogDir,
+                binaryCapabilities: binaryCapabilities,
+                loudnessMeasurements: loudnessMeasurements
+            ),
+               let pass2Args = try? Self.buildArguments(
+                for: file,
+                options: options,
+                pass: 2,
+                passLogBaseURL: passLogDir,
+                binaryCapabilities: binaryCapabilities,
+                loudnessMeasurements: loudnessMeasurements
+               ) {
                 
                 let status1 = await self.runFFmpegProcess(
                     ffmpegPath: ffmpegPath,
@@ -1211,6 +1876,7 @@ public actor RemuxEngine {
                     activeSegments: 1,
                     phaseLabel: nil,
                     notice: notice,
+                    executionTierLabel: executionTierLabel,
                     continuation: continuation
                 )
                 
@@ -1225,23 +1891,18 @@ public actor RemuxEngine {
                         activeSegments: 1,
                         phaseLabel: nil,
                         notice: notice,
+                        executionTierLabel: executionTierLabel,
                         continuation: continuation
                     )
-                    
-                    if !self.isCancelled && status2 == 0 {
-                        continuation.yield(RemuxProgress(
-                            progress: 1.0,
-                            currentTime: duration,
-                            totalTime: duration,
-                            speed: "Done",
-                            activeSegments: 1,
-                            phaseLabel: nil,
-                            notice: notice
-                        ))
-                    }
+                    encodeSucceeded = (!self.isCancelled && status2 == 0)
                 }
             }
-        } else if let arguments = try? Self.buildArguments(for: file, options: options) {
+        } else if let arguments = try? Self.buildArguments(
+            for: file,
+            options: options,
+            binaryCapabilities: binaryCapabilities,
+            loudnessMeasurements: loudnessMeasurements
+        ) {
             let status = await self.runFFmpegProcess(
                 ffmpegPath: ffmpegPath,
                 arguments: arguments,
@@ -1252,24 +1913,38 @@ public actor RemuxEngine {
                 activeSegments: 1,
                 phaseLabel: nil,
                 notice: notice,
+                executionTierLabel: executionTierLabel,
                 continuation: continuation
             )
-            
-            if !self.isCancelled && status == 0 {
-                continuation.yield(RemuxProgress(
-                    progress: 1.0,
-                    currentTime: duration,
-                    totalTime: duration,
-                    speed: "Done",
-                    activeSegments: 1,
-                    phaseLabel: nil,
-                    notice: notice
-                ))
-            }
+            encodeSucceeded = (!self.isCancelled && status == 0)
         }
         
         if let fam = family {
-            await HardwareSessionCoordinator.shared.release(family: fam, count: 1)
+            await self.coordinator.release(family: fam, count: 1)
+        }
+        
+        if encodeSucceeded {
+            let qcResult = await self.evaluatePerceptualQCIfNeeded(
+                file: file,
+                options: options,
+                ffmpegPath: ffmpegPath,
+                binaryCapabilities: binaryCapabilities,
+                executionTierLabel: executionTierLabel,
+                continuation: continuation
+            )
+            continuation.yield(RemuxProgress(
+                progress: 1.0,
+                currentTime: duration,
+                totalTime: duration,
+                speed: "Done",
+                activeSegments: 1,
+                phaseLabel: nil,
+                notice: notice,
+                executionTierLabel: executionTierLabel,
+                qcSummary: qcResult?.summary
+            ))
+        } else if self.isCancelled {
+            try? FileManager.default.removeItem(at: options.outputURL)
         }
     }
     
@@ -1280,6 +1955,9 @@ public actor RemuxEngine {
         options: RemuxOptions,
         decision: SegmentationDecision,
         ffmpegPath: String,
+        binaryCapabilities: FFmpegBinaryCapabilities,
+        loudnessMeasurements: [UUID: LoudnormMeasurement],
+        executionTierLabel: String?,
         continuation: AsyncStream<RemuxProgress>.Continuation
     ) async {
         let segmentCount = boundaries.count
@@ -1292,7 +1970,7 @@ public actor RemuxEngine {
         }
         
         if let fam = decision.engineFamily {
-            await HardwareSessionCoordinator.shared.acquire(family: fam, count: segmentCount)
+            await self.coordinator.acquire(family: fam, count: segmentCount)
         }
         
         let phaseTag = "\(segmentCount)× Segmented"
@@ -1303,7 +1981,8 @@ public actor RemuxEngine {
             speed: "Preparing...",
             activeSegments: segmentCount,
             phaseLabel: phaseTag,
-            notice: decision.notice
+            notice: decision.notice,
+            executionTierLabel: executionTierLabel
         ))
         
         let chunkExt = Self.segmentedChunkContainerExtension(for: videoTrack, targetContainer: options.targetContainer)
@@ -1322,7 +2001,8 @@ public actor RemuxEngine {
             totalDuration: totalDuration,
             segmentCount: segmentCount,
             phaseLabel: phaseTag,
-            notice: decision.notice
+            notice: decision.notice,
+            executionTierLabel: executionTierLabel
         )
         
         var allWorkersSucceeded = true
@@ -1335,7 +2015,8 @@ public actor RemuxEngine {
                     videoTrack: videoTrack,
                     boundary: boundary,
                     options: options,
-                    chunkOutputURL: cURL
+                    chunkOutputURL: cURL,
+                    binaryCapabilities: binaryCapabilities
                 )
                 let expectedDur = max(0.1, boundary.expectedDuration)
                 let idx = boundary.index
@@ -1365,7 +2046,9 @@ public actor RemuxEngine {
                     for: file,
                     nonVideoTracks: nonVideoTracks,
                     options: options,
-                    sidecarOutputURL: sURL
+                    sidecarOutputURL: sURL,
+                    binaryCapabilities: binaryCapabilities,
+                    loudnessMeasurements: loudnessMeasurements
                 )
                 group.addTask { [weak self] in
                     guard let self else { return -1 }
@@ -1387,7 +2070,7 @@ public actor RemuxEngine {
         }
         
         if let fam = decision.engineFamily {
-            await HardwareSessionCoordinator.shared.release(family: fam, count: segmentCount)
+            await self.coordinator.release(family: fam, count: segmentCount)
         }
         
         if self.isCancelled || !allWorkersSucceeded {
@@ -1413,7 +2096,8 @@ public actor RemuxEngine {
             for: file,
             concatListURL: concatListURL,
             sidecarAudioSubURL: sidecarURL,
-            options: options
+            options: options,
+            binaryCapabilities: binaryCapabilities
         ) else {
             return
         }
@@ -1425,7 +2109,8 @@ public actor RemuxEngine {
             speed: "Stitching...",
             activeSegments: segmentCount,
             phaseLabel: "Stitching segments...",
-            notice: decision.notice
+            notice: decision.notice,
+            executionTierLabel: executionTierLabel
         ))
         
         let stitchStatus = await self.runFFmpegProcess(
@@ -1438,10 +2123,19 @@ public actor RemuxEngine {
             activeSegments: segmentCount,
             phaseLabel: "Stitching segments...",
             notice: decision.notice,
+            executionTierLabel: executionTierLabel,
             continuation: continuation
         )
         
         if !self.isCancelled && stitchStatus == 0 {
+            let qcResult = await self.evaluatePerceptualQCIfNeeded(
+                file: file,
+                options: options,
+                ffmpegPath: ffmpegPath,
+                binaryCapabilities: binaryCapabilities,
+                executionTierLabel: executionTierLabel,
+                continuation: continuation
+            )
             continuation.yield(RemuxProgress(
                 progress: 1.0,
                 currentTime: totalDuration,
@@ -1449,7 +2143,9 @@ public actor RemuxEngine {
                 speed: "Done",
                 activeSegments: segmentCount,
                 phaseLabel: nil,
-                notice: decision.notice
+                notice: decision.notice,
+                executionTierLabel: executionTierLabel,
+                qcSummary: qcResult?.summary
             ))
         } else {
             try? FileManager.default.removeItem(at: options.outputURL)
@@ -1473,14 +2169,23 @@ public actor RemuxEngine {
                     return
                 }
                 
+                let binCaps = await BinaryCapabilityProbe.shared.capabilities(for: ffmpegPath)
                 let needsTwoPass = track.mediaType == .video &&
-                    track.videoConfig.multiPass &&
+                    (track.videoConfig.multiPass || track.videoConfig.effectiveRateControlMode == .twoPassVBR) &&
                     (track.action == .transcodeH264_VT || track.action == .transcodeHEVC_VT)
                 
                 // Ensure parent directory exists
                 try? FileManager.default.createDirectory(at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
                 
                 let duration = file.duration
+                var loudnessMeasurement: LoudnormMeasurement? = nil
+                if track.mediaType == .audio && track.action != .copy && track.audioConfig.loudnessTarget != .off && binCaps.supportsLoudnorm {
+                    loudnessMeasurement = await self.measureLoudnorm(for: file, track: track, ffmpegPath: ffmpegPath)
+                    if self.isCancelled {
+                        continuation.finish()
+                        return
+                    }
+                }
                 
                 if needsTwoPass {
                     let passLogDir = FileManager.default.temporaryDirectory
@@ -1496,7 +2201,9 @@ public actor RemuxEngine {
                         outputURL: outputURL,
                         pass: 1,
                         passLogBaseURL: passLogDir,
-                        useHardwareAcceleration: useHardwareAcceleration
+                        useHardwareAcceleration: useHardwareAcceleration,
+                        binaryCapabilities: binCaps,
+                        loudnessMeasurement: loudnessMeasurement
                     )
                     let status1 = await self.runFFmpegProcess(
                         ffmpegPath: ffmpegPath,
@@ -1519,7 +2226,9 @@ public actor RemuxEngine {
                         outputURL: outputURL,
                         pass: 2,
                         passLogBaseURL: passLogDir,
-                        useHardwareAcceleration: useHardwareAcceleration
+                        useHardwareAcceleration: useHardwareAcceleration,
+                        binaryCapabilities: binCaps,
+                        loudnessMeasurement: loudnessMeasurement
                     )
                     let status2 = await self.runFFmpegProcess(
                         ffmpegPath: ffmpegPath,
@@ -1539,7 +2248,9 @@ public actor RemuxEngine {
                         file: file,
                         track: track,
                         outputURL: outputURL,
-                        useHardwareAcceleration: useHardwareAcceleration
+                        useHardwareAcceleration: useHardwareAcceleration,
+                        binaryCapabilities: binCaps,
+                        loudnessMeasurement: loudnessMeasurement
                     )
                     let status = await self.runFFmpegProcess(
                         ffmpegPath: ffmpegPath,
@@ -1563,6 +2274,10 @@ public actor RemuxEngine {
     
     public func cancel() {
         self.isCancelled = true
+        if let nativeEngine = activeNativeEngine {
+            activeNativeEngine = nil
+            Task { await nativeEngine.cancel() }
+        }
         for (_, proc) in activeProcesses {
             if proc.isRunning {
                 proc.terminate()
@@ -1580,6 +2295,7 @@ private actor SegmentedProgressAggregator {
     private let segmentCount: Int
     private let phaseLabel: String
     private let notice: String?
+    private let executionTierLabel: String?
     
     private var chunkTimes: [Int: Double] = [:]
     private var chunkFPS: [Int: Double] = [:]
@@ -1594,13 +2310,15 @@ private actor SegmentedProgressAggregator {
         totalDuration: Double,
         segmentCount: Int,
         phaseLabel: String,
-        notice: String?
+        notice: String?,
+        executionTierLabel: String? = nil
     ) {
         self.boundaries = boundaries
         self.totalDuration = max(0.01, totalDuration)
         self.segmentCount = segmentCount
         self.phaseLabel = phaseLabel
         self.notice = notice
+        self.executionTierLabel = executionTierLabel
     }
     
     func updateChunk(index: Int, progress: RemuxProgress) -> RemuxProgress? {
@@ -1673,7 +2391,8 @@ private actor SegmentedProgressAggregator {
             remainingSeconds: eta,
             activeSegments: segmentCount,
             phaseLabel: phaseLabel,
-            notice: notice
+            notice: notice,
+            executionTierLabel: executionTierLabel
         )
     }
     

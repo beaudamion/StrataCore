@@ -12,6 +12,9 @@ public struct RemuxProgress: Equatable, Sendable {
     public let activeSegments: Int?
     public let phaseLabel: String?
     public let notice: String?
+    public let executionTierLabel: String?
+    public let qcSummary: String?
+    public let pixelBufferPoolShared: Bool?
     
     public init(
         progress: Double,
@@ -24,7 +27,10 @@ public struct RemuxProgress: Equatable, Sendable {
         remainingSeconds: Double? = nil,
         activeSegments: Int? = nil,
         phaseLabel: String? = nil,
-        notice: String? = nil
+        notice: String? = nil,
+        executionTierLabel: String? = nil,
+        qcSummary: String? = nil,
+        pixelBufferPoolShared: Bool? = nil
     ) {
         self.progress = max(0.0, min(1.0, progress))
         self.currentTime = currentTime
@@ -37,6 +43,9 @@ public struct RemuxProgress: Equatable, Sendable {
         self.activeSegments = activeSegments
         self.phaseLabel = phaseLabel
         self.notice = notice
+        self.executionTierLabel = executionTierLabel
+        self.qcSummary = qcSummary
+        self.pixelBufferPoolShared = pixelBufferPoolShared
     }
 }
 
