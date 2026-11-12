@@ -76,7 +76,7 @@ public enum ContainerFormat: String, CaseIterable, Identifiable, Codable, Sendab
         switch action {
         case .transcodeAV1:
             return "MP4, M4V, MKV, or WebM"
-        case .transcodeProRes, .transcodeUncompressed8, .transcodeUncompressed10:
+        case .transcodeProRes, .transcodeUncompressed:
             return "MOV (QuickTime) or MKV"
         case .transcodeH264_VT, .transcodeHEVC_VT:
             return "MP4, M4V, MOV, or MKV"

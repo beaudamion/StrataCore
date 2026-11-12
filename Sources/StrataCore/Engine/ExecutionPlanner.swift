@@ -413,8 +413,7 @@ public enum ExecutionPlanner {
             let isTwoPassVideo = (video.action == .transcodeH264_VT || video.action == .transcodeHEVC_VT)
                 && (video.videoConfig.multiPass || video.videoConfig.effectiveRateControlMode == .twoPassVBR)
             let isSoftwareOnlyAction = video.action == .transcodeAV1
-                || video.action == .transcodeUncompressed8
-                || video.action == .transcodeUncompressed10
+                || video.action == .transcodeUncompressed
             let usesSWCodec = !options.useHardwareAcceleration
                 || isTwoPassVideo
                 || isSoftwareOnlyAction
@@ -427,10 +426,10 @@ public enum ExecutionPlanner {
                 switch video.action {
                 case .transcodeAV1:
                     pipelineLabel = "Software SVT-AV1 (libsvtav1) pipeline"
-                case .transcodeUncompressed8:
-                    pipelineLabel = "Uncompressed 8-Bit 4:2:2 (rawvideo 2vuy) pipeline"
-                case .transcodeUncompressed10:
-                    pipelineLabel = "Uncompressed 10-Bit 4:2:2 (v210) pipeline"
+                case .transcodeUncompressed:
+                    pipelineLabel = video.resolvedUncompressedIs10Bit
+                        ? "Uncompressed 10-Bit 4:2:2 (v210) pipeline"
+                        : "Uncompressed 8-Bit 4:2:2 (rawvideo 2vuy) pipeline"
                 default:
                     pipelineLabel = "Software libx264/libx265/prores_ks pipeline"
                 }

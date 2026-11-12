@@ -285,15 +285,16 @@ struct MediaEngineUpgradeTests {
         #expect(planProRes.videoKind == .hybrid)
         #expect(planProRes.displayBadgeTitle(showTechnicalDetails: false) == "Hybrid Encoding")
         
-        // AV1, Uncompressed 8-Bit 4:2:2, and Uncompressed 10-Bit 4:2:2 route to Software Encoding tier
-        for (action, container, outExt, expectedTechToken) in [
-            (TrackAction.transcodeAV1, ContainerFormat.mp4, "mp4", "SVT-AV1"),
-            (TrackAction.transcodeUncompressed8, ContainerFormat.mov, "mov", "2vuy"),
-            (TrackAction.transcodeUncompressed10, ContainerFormat.mov, "mov", "v210")
+        // AV1 and Uncompressed route to Software Encoding tier
+        for (action, profile, container, outExt, expectedTechToken) in [
+            (TrackAction.transcodeAV1, "auto", ContainerFormat.mp4, "mp4", "SVT-AV1"),
+            (TrackAction.transcodeUncompressed, "8bit_422", ContainerFormat.mov, "mov", "2vuy"),
+            (TrackAction.transcodeUncompressed, "10bit_422", ContainerFormat.mov, "mov", "v210")
         ] {
             var swSpecFile = fileVLD
             swSpecFile.tracks[0].action = action
             swSpecFile.tracks[0].videoConfig = VideoEncodingConfig.default(for: action)
+            swSpecFile.tracks[0].videoConfig.profile = profile
             let swPlan = ExecutionPlanner.plan(
                 for: swSpecFile,
                 options: RemuxOptions(targetContainer: container, outputURL: URL(fileURLWithPath: "/tmp/out.\(outExt)"))
