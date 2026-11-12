@@ -13,7 +13,7 @@ public struct LanguageInfo: Identifiable, Hashable {
 
 public enum LanguageDirectory {
     public static let commonLanguages: [LanguageInfo] = [
-        LanguageInfo(code: "und", name: "Undetermined / None"),
+        LanguageInfo(code: "und", name: "Undet."),
         LanguageInfo(code: "eng", name: "English"),
         LanguageInfo(code: "spa", name: "Spanish"),
         LanguageInfo(code: "fra", name: "French"),
@@ -53,6 +53,6 @@ public enum LanguageDirectory {
         if let localized = locale.localizedString(forLanguageCode: trimmed) {
             return localized.capitalized
         }
-        return code.isEmpty ? "Undetermined" : code.uppercased()
+        return code.isEmpty ? "Undet." : code.uppercased()
     }
 }
