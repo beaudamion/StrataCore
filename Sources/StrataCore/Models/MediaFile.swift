@@ -127,6 +127,60 @@ public struct MediaFile: Identifiable, Hashable, Codable, Sendable {
         return first.count <= 5 ? first : suggestedContainer.shortName
     }
     
+    /// Accurate, human-readable container format description, disambiguating FFmpeg's
+    /// shared demuxer names (such as "QuickTime / MOV" for .mp4/.m4v/.m4a and
+    /// "Matroska / WebM" for .webm/.mkv).
+    public var displayContainerFormat: String {
+        let ext = url.pathExtension.lowercased()
+        let lowerFormat = containerFormat.lowercased()
+        let lowerLong = containerLongName.lowercased()
+        
+        if lowerLong.contains("quicktime / mov") || lowerFormat.contains("mov,mp4") || lowerFormat.contains("mp4,m4a") {
+            switch ext {
+            case "mp4": return "MP4 (MPEG-4)"
+            case "m4v": return "M4V (Apple Video)"
+            case "m4a": return "M4A (MPEG-4 Audio)"
+            case "mov": return "QuickTime / MOV"
+            case "3gp", "3g2": return "3GPP (Mobile Video)"
+            case "f4v": return "F4V (Flash MPEG-4)"
+            default: break
+            }
+        }
+        
+        if lowerLong.contains("matroska") || lowerFormat.contains("matroska") || lowerFormat.contains("webm") {
+            switch ext {
+            case "webm": return "WebM"
+            case "mka": return "MKA (Matroska Audio)"
+            case "mks": return "MKS (Matroska Subtitles)"
+            case "mkv": return "MKV (Matroska)"
+            default: break
+            }
+        }
+        
+        switch ext {
+        case "mp3" where lowerFormat.contains("mp3") || containerLongName.isEmpty:
+            return "MP3 (MPEG Audio)"
+        case "flac" where lowerFormat.contains("flac") || containerLongName.isEmpty:
+            return "FLAC (Lossless Audio)"
+        case "wav" where lowerFormat.contains("wav") || containerLongName.isEmpty:
+            return "WAV (Waveform Audio)"
+        case "aif", "aiff":
+            if lowerFormat.contains("aiff") || containerLongName.isEmpty {
+                return "AIFF (Audio Interchange)"
+            }
+        default:
+            break
+        }
+        
+        if !containerLongName.isEmpty {
+            return containerLongName
+        }
+        if !containerFormat.isEmpty {
+            return containerFormat
+        }
+        return cleanFormatName
+    }
+    
     // Exact duration including milliseconds (e.g. "00:17:05.320")
     public var preciseDuration: String {
         guard !duration.isNaN && duration >= 0 else { return "00:00:00.000" }
@@ -183,7 +237,7 @@ public struct MediaFile: Identifiable, Hashable, Codable, Sendable {
     
     public var technicalSummaryText: String {
         var lines: [String] = []
-        let fmtDisplay = containerLongName.isEmpty ? cleanFormatName : containerLongName
+        let fmtDisplay = displayContainerFormat
         lines.append("Container & File:")
         lines.append("  File: \(filename)")
         lines.append("  Path: \(url.path)")
@@ -268,6 +322,18 @@ public struct MediaFile: Identifiable, Hashable, Codable, Sendable {
             }
             if let bf = tr.hasBFrames {
                 lines.append("  B-Frames: \(bf > 0 ? "\(bf) reorder" : "None (0)")")
+            }
+            if let tb = tr.timeBase, !tb.isEmpty {
+                lines.append("  Timebase: \(tb)")
+            }
+            if let md = tr.formattedMasteringDisplay {
+                lines.append("  HDR10 Mastering: \(md)")
+            }
+            if let cll = tr.formattedContentLightLevel {
+                lines.append("  MaxCLL / MaxFALL: \(cll)")
+            }
+            if let dv = tr.formattedDolbyVision {
+                lines.append("  Dolby Vision: \(dv)")
             }
             if let fc = tr.frameCount, fc > 0 {
                 let grouped = numberFormatter.string(from: NSNumber(value: fc)) ?? "\(fc)"

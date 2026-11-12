@@ -84,3 +84,73 @@ public enum NamingPatternHelper {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
+
+public enum OutputNamingHelper {
+    public static let appendOutputSuffixDefaultsKey = "output_append_operation_suffix"
+    public static let remuxedSuffix = "remuxed"
+    public static let encodedSuffix = "encoded"
+
+    public static func shouldAppendOutputSuffix(defaults: UserDefaults = .standard) -> Bool {
+        if let stored = defaults.object(forKey: appendOutputSuffixDefaultsKey) as? Bool {
+            return stored
+        }
+        return true
+    }
+
+    public static func operationSuffix(for tracks: [MediaTrack]) -> String {
+        let hasActiveTranscode = tracks.contains { $0.isSelected && $0.action.isTranscode }
+        return hasActiveTranscode ? encodedSuffix : remuxedSuffix
+    }
+
+    public static func defaultOutputURL(
+        for sourceURL: URL,
+        tracks: [MediaTrack],
+        targetContainer: ContainerFormat,
+        targetDirectory: URL,
+        appendOutputSuffix: Bool = shouldAppendOutputSuffix(),
+        fileExists: (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) }
+    ) -> URL {
+        let baseName = sourceURL.deletingPathExtension().lastPathComponent
+        let newExt = targetContainer.fileExtension
+        let normalizedSourceDir = sourceURL.deletingLastPathComponent().standardizedFileURL.path
+        let normalizedTargetDir = targetDirectory.standardizedFileURL.path
+        let sameDirectory = normalizedSourceDir == normalizedTargetDir
+        let sameExtension = sourceURL.pathExtension.lowercased() == newExt.lowercased()
+
+        if sameDirectory && sameExtension {
+            if appendOutputSuffix {
+                let suffix = operationSuffix(for: tracks)
+                return targetDirectory.appendingPathComponent("\(baseName).\(suffix).\(newExt)")
+            } else {
+                return nextAvailableCollisionURL(
+                    baseName: baseName,
+                    fileExtension: newExt,
+                    targetDirectory: targetDirectory,
+                    sourceURL: sourceURL,
+                    fileExists: fileExists
+                )
+            }
+        }
+
+        return targetDirectory.appendingPathComponent("\(baseName).\(newExt)")
+    }
+
+    public static func nextAvailableCollisionURL(
+        baseName: String,
+        fileExtension: String,
+        targetDirectory: URL,
+        sourceURL: URL,
+        fileExists: (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) }
+    ) -> URL {
+        let normalizedSource = sourceURL.standardizedFileURL.path
+        var counter = 1
+        while counter < 10_000 {
+            let candidate = targetDirectory.appendingPathComponent("\(baseName) (\(counter)).\(fileExtension)")
+            if candidate.standardizedFileURL.path != normalizedSource && !fileExists(candidate) {
+                return candidate
+            }
+            counter += 1
+        }
+        return targetDirectory.appendingPathComponent("\(baseName) (1).\(fileExtension)")
+    }
+}
