@@ -240,7 +240,7 @@ public actor RemuxEngine {
             movFlags.append("+faststart")
         }
         if options.targetContainer == .mov && activeTracks.contains(where: {
-            $0.mediaType == .video && ($0.action == .transcodeUncompressed8 || $0.action == .transcodeUncompressed10)
+            $0.mediaType == .video && $0.action == .transcodeUncompressed
         }) {
             movFlags.append("+write_colr")
         }
@@ -328,7 +328,7 @@ public actor RemuxEngine {
         
         if isMP4Like {
             var movFlags = "+faststart"
-            if ext == "mov" && (track.action == .transcodeUncompressed8 || track.action == .transcodeUncompressed10) {
+            if ext == "mov" && track.action == .transcodeUncompressed {
                 movFlags += "+write_colr"
             }
             args += ["-movflags", movFlags]
@@ -854,14 +854,14 @@ public actor RemuxEngine {
             setparamsParts.append("field_mode=prog")
             args += ["-field_order\(spec)", "progressive"]
             
-        case .transcodeUncompressed8, .transcodeUncompressed10:
-            if track.action == .transcodeUncompressed8 {
+        case .transcodeUncompressed:
+            if track.resolvedUncompressedIs10Bit {
+                args += ["-c\(spec)", "v210", "-pix_fmt\(spec)", "yuv422p10le"]
+            } else {
                 args += ["-c\(spec)", "rawvideo", "-pix_fmt\(spec)", "uyvy422"]
                 if isMP4Like {
                     args += ["-tag\(spec)", "2vuy"]
                 }
-            } else {
-                args += ["-c\(spec)", "v210", "-pix_fmt\(spec)", "yuv422p10le"]
             }
             if needsDeinterlace {
                 filterParts.append("yadif=0:-1:1")
@@ -1143,8 +1143,7 @@ public actor RemuxEngine {
         }
         if targetContainer == .mov
             || videoTrack.action == .transcodeProRes
-            || videoTrack.action == .transcodeUncompressed8
-            || videoTrack.action == .transcodeUncompressed10 {
+            || videoTrack.action == .transcodeUncompressed {
             return "mov"
         }
         return "mp4"

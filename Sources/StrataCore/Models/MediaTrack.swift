@@ -54,8 +54,7 @@ public enum TrackAction: String, Codable, CaseIterable, Identifiable, Sendable {
     
     // Video Transcoding (Software / Uncompressed)
     case transcodeAV1 = "transcode_av1"
-    case transcodeUncompressed8 = "transcode_uncompressed_8"
-    case transcodeUncompressed10 = "transcode_uncompressed_10"
+    case transcodeUncompressed = "transcode_uncompressed"
     
     // Audio Transcoding
     case transcodeAAC_Stereo = "transcode_aac_stereo"
@@ -73,6 +72,18 @@ public enum TrackAction: String, Codable, CaseIterable, Identifiable, Sendable {
     case transcodeSRT = "transcode_srt"
     case transcodeMovText = "transcode_mov_text"
     
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+        if raw == "transcode_uncompressed_8" || raw == "transcode_uncompressed_10" {
+            self = .transcodeUncompressed
+        } else if let action = TrackAction(rawValue: raw) {
+            self = action
+        } else {
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unknown TrackAction rawValue: \(raw)")
+        }
+    }
+    
     public var id: String { rawValue }
     
     public var title: String {
@@ -87,10 +98,8 @@ public enum TrackAction: String, Codable, CaseIterable, Identifiable, Sendable {
             return "AV1"
         case .transcodeProRes:
             return "Apple ProRes"
-        case .transcodeUncompressed8:
-            return "Uncompressed 8-Bit 4:2:2"
-        case .transcodeUncompressed10:
-            return "Uncompressed 10-Bit 4:2:2"
+        case .transcodeUncompressed:
+            return "Uncompressed"
         case .transcodeAAC_Stereo:
             return "AAC Stereo"
         case .transcodeAAC_51:
@@ -121,8 +130,7 @@ public enum TrackAction: String, Codable, CaseIterable, Identifiable, Sendable {
     public static let videoActions: [TrackAction] = [
         .copy,
         .transcodeProRes,
-        .transcodeUncompressed8,
-        .transcodeUncompressed10,
+        .transcodeUncompressed,
         .transcodeH264_VT,
         .transcodeHEVC_VT,
         .transcodeAV1
@@ -176,7 +184,7 @@ public enum TrackAction: String, Codable, CaseIterable, Identifiable, Sendable {
     
     public var supportsVideoConfig: Bool {
         switch self {
-        case .transcodeH264_VT, .transcodeHEVC_VT, .transcodeAV1, .transcodeProRes, .transcodeUncompressed8, .transcodeUncompressed10:
+        case .transcodeH264_VT, .transcodeHEVC_VT, .transcodeAV1, .transcodeProRes, .transcodeUncompressed:
             return true
         default:
             return false
@@ -201,7 +209,7 @@ public enum VideoColorSpace: String, Codable, CaseIterable, Identifiable, Sendab
     
     public var displayName: String {
         switch self {
-        case .auto: return "Original / Auto"
+        case .auto: return "Automatic"
         case .rec709: return "Rec. 709 (1-1-1)"
         case .rec601NTSC: return "Rec. 601 (NTSC)"
         case .rec601PAL: return "Rec. 601 (PAL)"
@@ -270,7 +278,7 @@ public enum VideoFieldOrder: String, Codable, CaseIterable, Identifiable, Sendab
     
     public var displayName: String {
         switch self {
-        case .auto: return "Original / Auto"
+        case .auto: return "Automatic"
         case .progressive: return "Progressive"
         case .topFirst: return "Top First"
         case .bottomFirst: return "Bottom First"
@@ -334,7 +342,7 @@ public enum VideoDeinterlaceMode: String, Codable, CaseIterable, Identifiable, S
     
     public var displayName: String {
         switch self {
-        case .auto: return "Auto (If Interlaced)"
+        case .auto: return "Automatic"
         case .off: return "Off"
         case .force: return "Force Deinterlace"
         }
@@ -802,13 +810,13 @@ public struct VideoEncodingConfig: Hashable, Codable, Sendable {
                 rotation: .none,
                 svtPreset: 6
             )
-        case .transcodeUncompressed8, .transcodeUncompressed10:
+        case .transcodeUncompressed:
             return VideoEncodingConfig(
                 bitrate: "auto",
                 frameRate: nil,
                 fieldOrder: nil,
                 colorSpace: nil,
-                profile: nil,
+                profile: "auto",
                 entropyMode: nil,
                 keyFrameInterval: nil,
                 allowFrameReordering: true,
@@ -912,8 +920,13 @@ public struct VideoEncodingConfig: Hashable, Codable, Sendable {
             }
             spatialAQ = false
             preserveAlpha = false
-        case .transcodeUncompressed8, .transcodeUncompressed10:
-            profile = nil
+        case .transcodeUncompressed:
+            let validProfiles = ["auto", "8bit_422", "10bit_422"]
+            if let prof = profile, !validProfiles.contains(prof) {
+                profile = "auto"
+            } else if profile == nil {
+                profile = "auto"
+            }
             svtPreset = nil
             bitrate = "auto"
             maxBitrate = nil
@@ -1375,6 +1388,26 @@ public struct MediaTrack: Identifiable, Hashable, Codable, Sendable {
         return true
     }
     
+    public var resolvedUncompressedIs10Bit: Bool {
+        switch videoConfig.profile?.lowercased() {
+        case "10bit_422":
+            return true
+        case "8bit_422":
+            return false
+        default:
+            if let bd = bitDepth, bd >= 10 {
+                return true
+            }
+            let pfLower = pixelFormat?.lowercased() ?? ""
+            let trLower = colorTransfer?.lowercased() ?? ""
+            return pfLower.contains("10")
+                || pfLower.contains("12")
+                || trLower == "smpte2084"
+                || trLower == "arib-std-b67"
+                || isHDRDolbyVision
+        }
+    }
+    
     private func tagValue(forKeyCaseInsensitive target: String) -> String? {
         for (k, v) in tags where k.caseInsensitiveCompare(target) == .orderedSame {
             let trimmed = v.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1415,7 +1448,7 @@ public struct MediaTrack: Identifiable, Hashable, Codable, Sendable {
         } else {
             switch action {
             // Video Transcoding
-            case .transcodeProRes, .transcodeUncompressed8, .transcodeUncompressed10: return "mov"
+            case .transcodeProRes, .transcodeUncompressed: return "mov"
             case .transcodeH264_VT, .transcodeHEVC_VT, .transcodeAV1: return "mp4"
             
             // Audio Transcoding

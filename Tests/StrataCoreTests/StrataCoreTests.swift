@@ -715,13 +715,21 @@ struct StrataCoreTests {
         #expect(hevcPass2.contains("hvc1"))
         #expect(hevcPass2.contains { $0.contains("pass=2:stats=") })
         
-        // 7. AV1 (libsvtav1), Uncompressed 8-Bit 4:2:2 (2vuy), Uncompressed 10-Bit 4:2:2 (v210), Container Matrix, & Codable Backwards Compatibility
+        // 7. AV1 (libsvtav1), Uncompressed (2vuy / v210), Container Matrix, & Codable Backwards Compatibility
         #expect(TrackAction.transcodeAV1.title == "AV1")
-        #expect(TrackAction.transcodeUncompressed8.title == "Uncompressed 8-Bit 4:2:2")
-        #expect(TrackAction.transcodeUncompressed10.title == "Uncompressed 10-Bit 4:2:2")
+        #expect(TrackAction.transcodeUncompressed.title == "Uncompressed")
         #expect(TrackAction.transcodeAV1.supportsVideoConfig == true)
-        #expect(TrackAction.transcodeUncompressed8.supportsVideoConfig == true)
-        #expect(TrackAction.transcodeUncompressed10.supportsVideoConfig == true)
+        #expect(TrackAction.transcodeUncompressed.supportsVideoConfig == true)
+        #expect(VideoColorSpace.auto.displayName == "Automatic")
+        #expect(VideoFieldOrder.auto.displayName == "Automatic")
+        #expect(VideoDeinterlaceMode.auto.displayName == "Automatic")
+        #expect(VideoEntropyMode.auto.displayName == "Automatic")
+        
+        // Legacy TrackAction strings map to unified Uncompressed
+        let legacyUnc8Action = try JSONDecoder().decode(TrackAction.self, from: Data(#""transcode_uncompressed_8""#.utf8))
+        let legacyUnc10Action = try JSONDecoder().decode(TrackAction.self, from: Data(#""transcode_uncompressed_10""#.utf8))
+        #expect(legacyUnc8Action == .transcodeUncompressed)
+        #expect(legacyUnc10Action == .transcodeUncompressed)
         
         // Container compatibility matrix
         #expect(ContainerFormat.mp4.supportsVideoAction(.transcodeAV1) == true)
@@ -730,11 +738,11 @@ struct StrataCoreTests {
         #expect(ContainerFormat.webm.supportsVideoAction(.transcodeAV1) == true)
         #expect(ContainerFormat.mov.supportsVideoAction(.transcodeAV1) == false)
         
-        #expect(ContainerFormat.mov.supportsVideoAction(.transcodeUncompressed8) == true)
-        #expect(ContainerFormat.mkv.supportsVideoAction(.transcodeUncompressed8) == true)
-        #expect(ContainerFormat.mp4.supportsVideoAction(.transcodeUncompressed8) == false)
-        #expect(ContainerFormat.m4v.supportsVideoAction(.transcodeUncompressed10) == false)
-        #expect(ContainerFormat.webm.supportsVideoAction(.transcodeUncompressed10) == false)
+        #expect(ContainerFormat.mov.supportsVideoAction(.transcodeUncompressed) == true)
+        #expect(ContainerFormat.mkv.supportsVideoAction(.transcodeUncompressed) == true)
+        #expect(ContainerFormat.mp4.supportsVideoAction(.transcodeUncompressed) == false)
+        #expect(ContainerFormat.m4v.supportsVideoAction(.transcodeUncompressed) == false)
+        #expect(ContainerFormat.webm.supportsVideoAction(.transcodeUncompressed) == false)
         #expect(ContainerFormat.webm.supportsVideoAction(.transcodeH264_VT) == false)
         
         // AV1 & Uncompressed config defaults, sanitization, exportExtension, & NamingPatternHelper
@@ -747,14 +755,18 @@ struct StrataCoreTests {
         #expect(av1Cfg.effectiveRateControlMode == .averageBitrate)
         #expect(av1Cfg.multiPass == false)
         
-        var uncCfg = VideoEncodingConfig.default(for: .transcodeUncompressed10)
+        var uncCfg = VideoEncodingConfig.default(for: .transcodeUncompressed)
+        #expect(uncCfg.profile == "auto")
         uncCfg.bitrate = "15000k"
         uncCfg.svtPreset = 4
-        uncCfg.profile = "4"
-        uncCfg.sanitize(for: .transcodeUncompressed10)
+        uncCfg.profile = "invalid"
+        uncCfg.sanitize(for: .transcodeUncompressed)
         #expect(uncCfg.bitrate == "auto")
         #expect(uncCfg.svtPreset == nil)
-        #expect(uncCfg.profile == nil)
+        #expect(uncCfg.profile == "auto")
+        uncCfg.profile = "10bit_422"
+        uncCfg.sanitize(for: .transcodeUncompressed)
+        #expect(uncCfg.profile == "10bit_422")
         
         // Backwards-compatible Codable decode without newer keys like svtPreset
         let legacyJSON = #"{"bitrate":"auto","allowFrameReordering":true,"preserveAlpha":false,"multiPass":false,"rateControlMode":"constant_quality","qualityScale":65,"spatialAQ":true,"deinterlaceMode":"auto","resizeOption":"original","rotation":"none"}"#
@@ -817,8 +829,8 @@ struct StrataCoreTests {
             height: 1080,
             pixelFormat: "yuv420p",
             isSelected: true,
-            action: .transcodeUncompressed8,
-            videoConfig: VideoEncodingConfig(fieldOrder: .topFirst, colorSpace: .rec709)
+            action: .transcodeUncompressed,
+            videoConfig: VideoEncodingConfig(fieldOrder: .topFirst, colorSpace: .rec709, profile: "8bit_422")
         )
         #expect(unc8Track.exportExtension == "mov")
         #expect(NamingPatternHelper.formatFilename(pattern: "{filename}_{codec}.{ext}", sourceFilename: "Clip.mkv", track: unc8Track, targetExtension: "mov") == "Clip_2vuy.mov")
@@ -842,8 +854,8 @@ struct StrataCoreTests {
             height: 1080,
             pixelFormat: "yuv420p",
             isSelected: true,
-            action: .transcodeUncompressed10,
-            videoConfig: VideoEncodingConfig(colorSpace: .rec709)
+            action: .transcodeUncompressed,
+            videoConfig: VideoEncodingConfig(colorSpace: .rec709, profile: "10bit_422")
         )
         #expect(unc10Track.exportExtension == "mov")
         #expect(NamingPatternHelper.formatFilename(pattern: "{filename}_{codec}.{ext}", sourceFilename: "Clip.mkv", track: unc10Track, targetExtension: "mov") == "Clip_v210.mov")
@@ -854,6 +866,15 @@ struct StrataCoreTests {
         #expect(unc10MovArgs.contains("v210"))
         #expect(unc10MovArgs.contains("yuv422p10le"))
         #expect(unc10MovArgs.contains("+faststart+write_colr"))
+        
+        // Uncompressed Automatic profile follows source bit depth (8-bit -> 2vuy, 10-bit -> v210)
+        var uncAuto8 = unc8Track
+        uncAuto8.videoConfig.profile = "auto"
+        #expect(uncAuto8.resolvedUncompressedIs10Bit == false)
+        var uncAuto10 = uncAuto8
+        uncAuto10.pixelFormat = "yuv420p10le"
+        #expect(uncAuto10.resolvedUncompressedIs10Bit == true)
+        #expect(NamingPatternHelper.formatFilename(pattern: "{filename}_{codec}.{ext}", sourceFilename: "Clip.mkv", track: uncAuto10, targetExtension: "mov") == "Clip_v210.mov")
         
         #expect(RemuxEngine.segmentedChunkContainerExtension(for: unc10Track, targetContainer: .mov) == "mov")
         #expect(RemuxEngine.segmentedChunkContainerExtension(for: av1CQTrack, targetContainer: .webm) == "webm")
