@@ -49,7 +49,7 @@ public enum NamingPatternHelper {
             case .transcodeFLAC: codec = "flac"
             case .transcodeMP3: codec = "mp3"
             case .transcodeOpus: codec = "opus"
-            case .transcodeAAC_Stereo, .transcodeAAC_51: codec = "aac"
+            case .transcodeAAC: codec = "aac"
             case .transcodeAC3_51: codec = "ac3"
             case .transcodeEAC3_51: codec = "eac3"
             case .transcodeWAV: codec = "wav"

@@ -179,12 +179,20 @@ public final class BatchEngine: ObservableObject {
                     if media.tracks[i].codecName.lowercased().contains("aac") {
                         media.tracks[i].action = .copy
                     } else {
-                        media.tracks[i].action = .transcodeAAC_Stereo
+                        media.tracks[i].action = .transcodeAAC
+                        media.tracks[i].audioConfig = AudioEncodingConfig.default(for: .transcodeAAC)
                     }
                 case .alwaysAACStereo:
-                    media.tracks[i].action = .transcodeAAC_Stereo
+                    media.tracks[i].action = .transcodeAAC
+                    var cfg = AudioEncodingConfig.default(for: .transcodeAAC)
+                    cfg.channels = 2
+                    media.tracks[i].audioConfig = cfg
                 case .alwaysAAC51:
-                    media.tracks[i].action = .transcodeAAC_51
+                    media.tracks[i].action = .transcodeAAC
+                    var cfg = AudioEncodingConfig.default(for: .transcodeAAC)
+                    cfg.channels = 6
+                    cfg.bitrate = "384k"
+                    media.tracks[i].audioConfig = cfg
                 }
             } else if media.tracks[i].mediaType == .subtitle {
                 switch item.subtitlePreset {

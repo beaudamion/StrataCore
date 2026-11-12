@@ -622,7 +622,12 @@ struct StrataCoreTests {
         
         // Passthrough video (even with audio transcode) omits -hwaccel videotoolbox
         let copyVideoTrack = MediaTrack(streamIndex: 0, mediaType: .video, codecName: "h264", isSelected: true, action: .copy)
-        let transcodeAudioTrack = MediaTrack(streamIndex: 1, mediaType: .audio, codecName: "ac3", isSelected: true, action: .transcodeAAC_Stereo)
+        let transcodeAudioTrack = MediaTrack(streamIndex: 1, mediaType: .audio, codecName: "ac3", isSelected: true, action: .transcodeAAC)
+        // Legacy AAC action rawValues decode cleanly to unified .transcodeAAC
+        let legacyStereoData = #""transcode_aac_stereo""#.data(using: .utf8)!
+        let legacy51Data = #""transcode_aac_51""#.data(using: .utf8)!
+        #expect((try JSONDecoder().decode(TrackAction.self, from: legacyStereoData)) == .transcodeAAC)
+        #expect((try JSONDecoder().decode(TrackAction.self, from: legacy51Data)) == .transcodeAAC)
         let passthroughVideoArgs = try RemuxEngine.buildArguments(
             for: MediaFile(url: sourceURL, filename: "source.mkv", fileSize: 10_000, containerFormat: "matroska", duration: 10, tracks: [copyVideoTrack, transcodeAudioTrack]),
             options: RemuxOptions(targetContainer: .mp4, outputURL: mp4Out)
@@ -1059,7 +1064,7 @@ struct StrataCoreTests {
         let copyVideo = MediaTrack(streamIndex: 0, mediaType: .video, codecName: "h264", isSelected: true, action: .copy)
         let copyAudio = MediaTrack(streamIndex: 1, mediaType: .audio, codecName: "aac", isSelected: true, action: .copy)
         let hevcVideo = MediaTrack(streamIndex: 0, mediaType: .video, codecName: "h264", isSelected: true, action: .transcodeHEVC_VT)
-        let aacAudio = MediaTrack(streamIndex: 1, mediaType: .audio, codecName: "ac3", isSelected: true, action: .transcodeAAC_Stereo)
+        let aacAudio = MediaTrack(streamIndex: 1, mediaType: .audio, codecName: "ac3", isSelected: true, action: .transcodeAAC)
         let unselectedTranscodeSub = MediaTrack(streamIndex: 2, mediaType: .subtitle, codecName: "subrip", isSelected: false, action: .transcodeMovText)
         
         // 1. All-passthrough same-dir same-ext -> .remuxed

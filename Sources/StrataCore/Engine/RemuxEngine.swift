@@ -958,8 +958,8 @@ public actor RemuxEngine {
         switch track.action {
         case .copy:
             return ["-c\(spec)", "copy"]
-        case .transcodeAAC_Stereo, .transcodeAAC_51:
-            let fallbackBr = (track.action == .transcodeAAC_51) ? "384k" : "192k"
+        case .transcodeAAC:
+            let fallbackBr = (track.audioConfig.channels == 6) ? "384k" : "192k"
             let explicitBr = track.audioConfig.bitrate.trimmingCharacters(in: .whitespacesAndNewlines)
             let br = explicitBr.isEmpty ? fallbackBr : explicitBr
             if binaryCapabilities.supportsAudioToolboxAAC {
@@ -1791,7 +1791,7 @@ public actor RemuxEngine {
                         options: options,
                         targetBitrateBps: targetBps,
                         maxBitrateBps: maxBps,
-                        notice: plan.reasonSummary
+                        notice: nil
                     ) { update in
                         continuation.yield(update)
                     }
@@ -1815,7 +1815,7 @@ public actor RemuxEngine {
                                 speed: "Done",
                                 activeSegments: 1,
                                 phaseLabel: nil,
-                                notice: plan.reasonSummary,
+                                notice: nil,
                                 executionTierLabel: plan.badgeTitle,
                                 qcSummary: qcResult?.summary,
                                 pixelBufferPoolShared: nativeResult.pixelBufferPoolShared
@@ -1900,7 +1900,7 @@ public actor RemuxEngine {
                     needsTwoPass: needsTwoPass,
                     ffmpegPath: ffmpegPath,
                     family: decision.engineFamily,
-                    notice: decision.notice ?? plan.reasonSummary,
+                    notice: decision.notice,
                     binaryCapabilities: binCaps,
                     loudnessMeasurements: loudnessMeasurements,
                     executionTierLabel: plan.badgeTitle,
