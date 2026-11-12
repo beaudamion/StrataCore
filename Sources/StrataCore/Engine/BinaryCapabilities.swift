@@ -28,7 +28,7 @@ public struct FFmpegBinaryCapabilities: Equatable, Sendable {
         proResKsSupportsVendor: Bool = true,
         supportsScaleVT: Bool = true,
         supportsTransposeVT: Bool = true,
-        supportsYadifVT: Bool = true,
+        supportsYadifVT: Bool = false,
         supportsAudioToolboxAAC: Bool = true,
         supportsLoudnorm: Bool = true,
         supportsXPSNR: Bool = true,

@@ -83,10 +83,34 @@ struct MediaEngineUpgradeTests {
             #expect(liveCaps.supportsAudioToolboxAAC)
             #expect(liveCaps.supportsScaleVT)
             #expect(liveCaps.supportsTransposeVT)
-            #expect(liveCaps.supportsYadifVT)
             #expect(liveCaps.supportsLoudnorm)
+            #expect(liveCaps.supportsXPSNR)
+            #expect(liveCaps.supportsLibVMAF)
             #expect(liveCaps.supportsDumpExtraBSF)
+            #expect(liveCaps.supportsProResRAWDecode)
+            if ffmpeg.contains("/opt/homebrew/") {
+                #expect(liveCaps.supportsYadifVT)
+            }
         }
+        
+        // Interlaced tracks must drop off VLD safely to CPU deinterlace when supportsYadifVT == false
+        var interlacedTrack = MediaTrack(
+            streamIndex: 0,
+            mediaType: .video,
+            codecName: "h264",
+            width: 1920,
+            height: 1080,
+            pixelFormat: "yuv420p",
+            fieldOrder: "tt",
+            isSelected: true,
+            action: .transcodeHEVC_VT
+        )
+        interlacedTrack.videoConfig = VideoEncodingConfig.default(for: .transcodeHEVC_VT)
+        interlacedTrack.videoConfig.deinterlaceMode = .auto
+        let noYadifCaps = FFmpegBinaryCapabilities(supportsYadifVT: false)
+        #expect(ExecutionPlanner.canUseZeroCopyVLD(for: interlacedTrack, useHardwareAcceleration: true, binaryCapabilities: noYadifCaps) == false)
+        let withYadifCaps = FFmpegBinaryCapabilities(supportsYadifVT: true)
+        #expect(ExecutionPlanner.canUseZeroCopyVLD(for: interlacedTrack, useHardwareAcceleration: true, binaryCapabilities: withYadifCaps) == true)
     }
     
     // MARK: - 2. Three-Tier Execution Planner & Dolby Vision Guard
@@ -230,14 +254,23 @@ struct MediaEngineUpgradeTests {
         #expect(argsCQ.contains { $0.contains("transpose_vt=dir=clock") && $0.contains("scale_vt=w=1280:h=-2") })
         #expect(!argsCQ.contains { $0.contains("yadif") }, "Progressive source must not run yadif")
         
-        // 2. Interlaced source activates yadif_videotoolbox under VLD
+        // 2. Interlaced source activates yadif_videotoolbox when supported, or safely falls back to CPU yadif otherwise
         var trackInterlaced = trackCQ
         trackInterlaced.fieldOrder = "tt"
-        let argsInterlaced = try RemuxEngine.buildArguments(
+        let argsInterlacedVLD = try RemuxEngine.buildArguments(
             for: MediaFile(url: sourceURL, filename: "src.mp4", fileSize: 1000, containerFormat: "mp4", duration: 10, tracks: [trackInterlaced]),
-            options: RemuxOptions(targetContainer: .mp4, outputURL: outURL)
+            options: RemuxOptions(targetContainer: .mp4, outputURL: outURL),
+            binaryCapabilities: FFmpegBinaryCapabilities(supportsYadifVT: true)
         )
-        #expect(argsInterlaced.contains { $0.contains("yadif_videotoolbox=mode=send_frame:parity=auto:deint=interlaced") })
+        #expect(argsInterlacedVLD.contains { $0.contains("yadif_videotoolbox=mode=send_frame:parity=auto:deint=interlaced") })
+        
+        let argsInterlacedFallback = try RemuxEngine.buildArguments(
+            for: MediaFile(url: sourceURL, filename: "src.mp4", fileSize: 1000, containerFormat: "mp4", duration: 10, tracks: [trackInterlaced]),
+            options: RemuxOptions(targetContainer: .mp4, outputURL: outURL),
+            binaryCapabilities: .assumedModernDefaults
+        )
+        #expect(argsInterlacedFallback.contains { $0.contains("yadif=0:-1:1") })
+        #expect(!argsInterlacedFallback.contains { $0.contains("yadif_videotoolbox") })
         
         // 3. Constrained Average Bitrate emits -b:v + -maxrate + -bufsize, NEVER -q:v
         var trackABR = trackCQ
