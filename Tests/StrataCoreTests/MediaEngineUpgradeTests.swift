@@ -222,21 +222,27 @@ struct MediaEngineUpgradeTests {
         #expect(planNative.displayBadgeTitle(showTechnicalDetails: false) == "Hardware 2-Pass Encoding")
         #expect(planNative.displayBadgeTitle(showTechnicalDetails: true) == "Native 2-Pass HW")
         #expect(!planNative.displayReasonSummary(showTechnicalDetails: false).contains("VideoToolbox"))
+        #expect(planNative.displayReasonSummary(showTechnicalDetails: false) == "Hardware 2-Pass H.264")
         #expect(planVLD.videoKind == .hardwareGPU)
         #expect(planVLD.displayBadgeTitle(showTechnicalDetails: false) == "Hardware Encoding")
+        #expect(planVLD.displayReasonSummary(showTechnicalDetails: false) == "Hardware HEVC")
+        #expect(!planVLD.displayReasonSummary(showTechnicalDetails: false).contains("videotoolbox"))
         #expect(planHybrid.videoKind == .hybrid)
         #expect(planHybrid.displayBadgeTitle(showTechnicalDetails: false) == "Hybrid Encoding")
         #expect(planHybrid.displayBadgeTitle(showTechnicalDetails: true) == "Hybrid HW + CPU")
+        #expect(planHybrid.displayReasonSummary(showTechnicalDetails: false) == "Hardware HEVC")
+        #expect(!planHybrid.displayReasonSummary(showTechnicalDetails: false).contains("VideoToolbox"))
         #expect(planSW.videoKind == .software)
         #expect(planSW.displayBadgeTitle(showTechnicalDetails: false) == "Software Encoding")
         #expect(planSW.displayBadgeTitle(showTechnicalDetails: true) == "Software libav")
         #expect(!planSW.displayReasonSummary(showTechnicalDetails: false).contains("libx264"))
+        #expect(planSW.displayReasonSummary(showTechnicalDetails: false) == "Software 2-Pass H.264")
         #expect(ExecutionPlanner.displayTierLabel("Native 2-Pass HW", showTechnicalDetails: false) == "Hardware 2-Pass Encoding")
         #expect(ExecutionPlanner.displayTierLabel("Zero-Copy HW + Audio Encode", showTechnicalDetails: false) == "Hardware Encoding + Audio Encode")
         
         // Audio Encode suffix combinations & Video Copy + Audio Encode + Audio-only
         var fileCopyPlusAudio = fileCopy
-        fileCopyPlusAudio.tracks[1].action = .transcodeAAC_Stereo
+        fileCopyPlusAudio.tracks[1].action = .transcodeAAC
         let planCopyAudio = ExecutionPlanner.plan(
             for: fileCopyPlusAudio,
             options: RemuxOptions(targetContainer: .mp4, outputURL: URL(fileURLWithPath: "/tmp/out.mp4"))
@@ -245,9 +251,10 @@ struct MediaEngineUpgradeTests {
         #expect(planCopyAudio.hasAudioEncode == true)
         #expect(planCopyAudio.displayBadgeTitle(showTechnicalDetails: false) == "Lossless Remux + Audio Encode")
         #expect(planCopyAudio.displayBadgeTitle(showTechnicalDetails: true) == "Video Copy (hvc1) + Audio Encode")
+        #expect(planCopyAudio.displayReasonSummary(showTechnicalDetails: false) == "Lossless Video Copy + AAC Audio")
         
         var fileHWPlusAudio = fileVLD
-        fileHWPlusAudio.tracks[1].action = .transcodeAAC_Stereo
+        fileHWPlusAudio.tracks[1].action = .transcodeAAC
         let planHWAudio = ExecutionPlanner.plan(
             for: fileHWPlusAudio,
             options: RemuxOptions(targetContainer: .mp4, outputURL: URL(fileURLWithPath: "/tmp/out.mp4"))
@@ -256,6 +263,7 @@ struct MediaEngineUpgradeTests {
         #expect(planHWAudio.hasAudioEncode == true)
         #expect(planHWAudio.displayBadgeTitle(showTechnicalDetails: false) == "Hardware Encoding + Audio Encode")
         #expect(planHWAudio.displayBadgeTitle(showTechnicalDetails: true) == "Zero-Copy HW + Audio Encode")
+        #expect(planHWAudio.displayReasonSummary(showTechnicalDetails: false) == "Hardware HEVC + AAC Audio")
         
         let audioOnlyFile = MediaFile(
             url: URL(fileURLWithPath: "/tmp/in.flac"),
@@ -263,7 +271,7 @@ struct MediaEngineUpgradeTests {
             fileSize: 500_000,
             containerFormat: "flac",
             duration: 20.0,
-            tracks: [MediaTrack(streamIndex: 0, mediaType: .audio, codecName: "flac", action: .transcodeAAC_Stereo)]
+            tracks: [MediaTrack(streamIndex: 0, mediaType: .audio, codecName: "flac", action: .transcodeAAC)]
         )
         let planAudioOnly = ExecutionPlanner.plan(
             for: audioOnlyFile,
@@ -272,6 +280,7 @@ struct MediaEngineUpgradeTests {
         #expect(planAudioOnly.videoKind == .none)
         #expect(planAudioOnly.hasAudioEncode == true)
         #expect(planAudioOnly.displayBadgeTitle(showTechnicalDetails: false) == "Audio Encode")
+        #expect(planAudioOnly.displayReasonSummary(showTechnicalDetails: false) == "AAC Audio Encode")
         
         // ProRes keeps HW ProRes even if stale multiPass flag is set on videoConfig
         var proresFile = fileVLD
@@ -285,11 +294,11 @@ struct MediaEngineUpgradeTests {
         #expect(planProRes.videoKind == .hybrid)
         #expect(planProRes.displayBadgeTitle(showTechnicalDetails: false) == "Hybrid Encoding")
         
-        // AV1 and Uncompressed route to Software Encoding tier
-        for (action, profile, container, outExt, expectedTechToken) in [
-            (TrackAction.transcodeAV1, "auto", ContainerFormat.mp4, "mp4", "SVT-AV1"),
-            (TrackAction.transcodeUncompressed, "8bit_422", ContainerFormat.mov, "mov", "2vuy"),
-            (TrackAction.transcodeUncompressed, "10bit_422", ContainerFormat.mov, "mov", "v210")
+        // AV1 and Uncompressed route to Software Encoding tier and hide libsvtav1 / v210 in plain mode
+        for (action, profile, container, outExt, expectedPlain, expectedTechToken) in [
+            (TrackAction.transcodeAV1, "auto", ContainerFormat.mp4, "mp4", "Software AV1", "SVT-AV1"),
+            (TrackAction.transcodeUncompressed, "8bit_422", ContainerFormat.mov, "mov", "Uncompressed 8-Bit 4:2:2", "2vuy"),
+            (TrackAction.transcodeUncompressed, "10bit_422", ContainerFormat.mov, "mov", "Uncompressed 10-Bit 4:2:2", "v210")
         ] {
             var swSpecFile = fileVLD
             swSpecFile.tracks[0].action = action
@@ -303,6 +312,9 @@ struct MediaEngineUpgradeTests {
             #expect(swPlan.videoKind == .software)
             #expect(swPlan.usesZeroCopyVLD == false)
             #expect(swPlan.displayBadgeTitle(showTechnicalDetails: false) == "Software Encoding")
+            #expect(swPlan.displayReasonSummary(showTechnicalDetails: false) == expectedPlain)
+            #expect(!swPlan.displayReasonSummary(showTechnicalDetails: false).contains("lib"))
+            #expect(!swPlan.displayReasonSummary(showTechnicalDetails: false).contains("pipeline"))
             #expect(swPlan.displayReasonSummary(showTechnicalDetails: true).contains(expectedTechToken))
         }
         
@@ -455,8 +467,8 @@ struct MediaEngineUpgradeTests {
             channels: 6,
             sampleRate: "48000",
             isSelected: true,
-            action: .transcodeAAC_Stereo,
-            audioConfig: AudioEncodingConfig.default(for: .transcodeAAC_Stereo)
+            action: .transcodeAAC,
+            audioConfig: AudioEncodingConfig.default(for: .transcodeAAC)
         )
         audioTrack.audioConfig.loudnessTarget = .streaming14
         
@@ -574,8 +586,8 @@ struct MediaEngineUpgradeTests {
         media.tracks[0].videoConfig = VideoEncodingConfig.default(for: .transcodeHEVC_VT)
         media.tracks[0].videoConfig.qualityScale = 72
         media.tracks[0].videoConfig.resizeOption = .hd720
-        media.tracks[1].action = .transcodeAAC_Stereo
-        media.tracks[1].audioConfig = AudioEncodingConfig.default(for: .transcodeAAC_Stereo)
+        media.tracks[1].action = .transcodeAAC
+        media.tracks[1].audioConfig = AudioEncodingConfig.default(for: .transcodeAAC)
         media.tracks[1].audioConfig.loudnessTarget = .podcast16
         
         let vldOpts = RemuxOptions(

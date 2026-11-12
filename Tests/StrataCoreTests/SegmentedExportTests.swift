@@ -235,7 +235,7 @@ struct SegmentedExportTests {
     @Test("Segmented Chunk, Sidecar, and Stitch FFmpeg Argument Builders")
     func testSegmentedArgumentBuilders() throws {
         var file = Self.makeSampleMediaFile(duration: 120.0, action: .transcodeHEVC_VT)
-        file.tracks[1].action = .transcodeAAC_Stereo
+        file.tracks[1].action = .transcodeAAC
         let options = RemuxOptions(targetContainer: .mp4, outputURL: URL(fileURLWithPath: "/tmp/final.mp4"), stripAllMetadata: true, stripChapters: false, fastStart: true)
         
         let boundary1 = VideoSegmentBoundary(index: 1, seekTime: 59.9995, exactStartPTS: 60.0, exactEndPTS: nil, expectedDuration: 60.0)
@@ -321,7 +321,7 @@ struct SegmentedExportTests {
         let h264OutURL = workDir.appendingPathComponent("out_2seg_h264.mp4")
         media.tracks[0].action = .transcodeH264_VT
         media.tracks[0].videoConfig = VideoEncodingConfig(bitrate: "2500k", allowFrameReordering: true)
-        media.tracks[1].action = .transcodeAAC_Stereo
+        media.tracks[1].action = .transcodeAAC
         
         let maxCaps = HardwareMediaCapabilities(
             chipName: "Test Silicon Max", cpuCoreCount: 16, isAppleSilicon: true,

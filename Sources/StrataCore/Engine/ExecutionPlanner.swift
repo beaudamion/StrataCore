@@ -33,6 +33,7 @@ public struct ExecutionPlan: Equatable, Sendable {
     public let retagsHEVCToHVC1: Bool
     public let requiresDolbyVisionGuard: Bool
     public let dolbyVisionWarningMessage: String?
+    public let plainReasonSummary: String
     public let reasonSummary: String
     
     public init(
@@ -45,6 +46,7 @@ public struct ExecutionPlan: Equatable, Sendable {
         retagsHEVCToHVC1: Bool,
         requiresDolbyVisionGuard: Bool,
         dolbyVisionWarningMessage: String?,
+        plainReasonSummary: String? = nil,
         reasonSummary: String
     ) {
         self.tier = tier
@@ -71,6 +73,7 @@ public struct ExecutionPlan: Equatable, Sendable {
         self.retagsHEVCToHVC1 = retagsHEVCToHVC1
         self.requiresDolbyVisionGuard = requiresDolbyVisionGuard
         self.dolbyVisionWarningMessage = dolbyVisionWarningMessage
+        self.plainReasonSummary = plainReasonSummary ?? reasonSummary
         self.reasonSummary = reasonSummary
     }
     
@@ -96,41 +99,7 @@ public struct ExecutionPlan: Equatable, Sendable {
     }
     
     public func displayReasonSummary(showTechnicalDetails: Bool) -> String {
-        if showTechnicalDetails {
-            return reasonSummary
-        }
-        switch videoKind {
-        case .none:
-            return "Encodes selected audio tracks"
-        case .losslessCopy:
-            if hasAudioEncode {
-                return retagsHEVCToHVC1
-                    ? "Copies video without re-encoding (formatted for Apple QuickTime) while encoding selected audio"
-                    : "Copies video without re-encoding while encoding selected audio tracks"
-            }
-            if badgeTitle == "Lossless Smart-Cut" {
-                return "Trims and copies video and audio without re-encoding"
-            }
-            return retagsHEVCToHVC1
-                ? "Copies video and audio without re-encoding, formatted for Apple QuickTime playback"
-                : "Copies video and audio without re-encoding for zero quality loss"
-        case .hardwareGPU:
-            return hasAudioEncode
-                ? "Fast GPU-accelerated video encoding on Apple Silicon paired with audio encoding"
-                : "Fast GPU-accelerated video encoding on Apple Silicon"
-        case .hardwareTwoPass:
-            return hasAudioEncode
-                ? "High-quality two-pass hardware encoding on Apple Silicon paired with audio encoding"
-                : "High-quality two-pass hardware encoding on Apple Silicon"
-        case .hybrid:
-            return hasAudioEncode
-                ? "Hardware video encoding paired with CPU pixel/format conversion and audio encoding"
-                : "Hardware video encoding paired with CPU pixel/format conversion"
-        case .software:
-            return hasAudioEncode
-                ? "CPU-based video encoding for specialized formats or multi-pass quality, paired with audio encoding"
-                : "CPU-based video encoding for specialized formats or multi-pass quality"
-        }
+        showTechnicalDetails ? reasonSummary : plainReasonSummary
     }
 }
 
@@ -330,9 +299,12 @@ public enum ExecutionPlanner {
     ) -> ExecutionPlan {
         let selectedTracks = file.tracks.filter { $0.isSelected }
         let selectedVideos = selectedTracks.filter { $0.mediaType == .video }
-        let hasAudioEncode = selectedTracks.contains { $0.mediaType == .audio && $0.action.isTranscode }
+        let audioTranscodeTracks = selectedTracks.filter { $0.mediaType == .audio && $0.action.isTranscode }
+        let hasAudioEncode = !audioTranscodeTracks.isEmpty
         let hasAnyTranscode = selectedTracks.contains { $0.action.isTranscode }
         let isMP4Like = (options.targetContainer == .mp4 || options.targetContainer == .m4v || options.targetContainer == .mov)
+        
+        let audioSummaries = formattedAudioSummaries(for: audioTranscodeTracks, binaryCapabilities: binaryCapabilities)
         
         let retagsHEVC = isMP4Like && selectedVideos.contains {
             $0.action == .copy && $0.isHEVCCodec && $0.hasHEV1Tag
@@ -351,6 +323,9 @@ public enum ExecutionPlanner {
         if !hasAnyTranscode {
             let isTrimmed = options.trimRange?.isValid == true
             let badge = isTrimmed ? "Lossless Smart-Cut" : "Lossless Remux"
+            let plain = isTrimmed
+                ? "Lossless Smart-Cut"
+                : (retagsHEVC ? "Lossless Remux (Apple QuickTime Tag)" : "Lossless Remux")
             let reason = retagsHEVC
                 ? "Zero-generation stream copy with automatic hev1→hvc1 Apple playback tag"
                 : "Zero-generation packet stream copy (no video or audio re-encoding)"
@@ -364,12 +339,15 @@ public enum ExecutionPlanner {
                 retagsHEVCToHVC1: retagsHEVC,
                 requiresDolbyVisionGuard: false,
                 dolbyVisionWarningMessage: nil,
+                plainReasonSummary: plain,
                 reasonSummary: reason
             )
         }
         
         // Tier B (Native): Swift AVAssetReader + VTCompressionSession 2-Pass HW VBR
         if canUseNativeVideoToolboxTwoPass(for: file, options: options) {
+            let video = selectedVideos.first
+            let vName = (video?.action == .transcodeHEVC_VT) ? "HEVC" : "H.264"
             return ExecutionPlan(
                 tier: .zeroCopyHardwareTranscode,
                 videoKind: .hardwareTwoPass,
@@ -380,13 +358,22 @@ public enum ExecutionPlanner {
                 retagsHEVCToHVC1: false,
                 requiresDolbyVisionGuard: hasDoViBlock,
                 dolbyVisionWarningMessage: doViWarning,
-                reasonSummary: "Native VideoToolbox two-pass VBR with shared IOSurface pixel buffer pool"
+                plainReasonSummary: "Hardware 2-Pass \(vName)",
+                reasonSummary: "Native VideoToolbox two-pass VBR (\(vName)) with shared IOSurface pixel buffer pool"
             )
         }
         
         // Check VideoToolbox / Zero-Copy VLD vs Hybrid/Software
         if let video = selectedVideos.first, video.action != .copy {
             let audioSuffix = hasAudioEncode ? " + Audio Encode" : ""
+            let plainVideoCodec = plainVideoFormatName(for: video)
+            let techVTEncoder: String = {
+                switch video.action {
+                case .transcodeHEVC_VT: return "hevc_videotoolbox"
+                case .transcodeProRes: return "prores_videotoolbox"
+                default: return "h264_videotoolbox"
+                }
+            }()
             let vld = canUseZeroCopyVLD(
                 for: video,
                 useHardwareAcceleration: options.useHardwareAcceleration,
@@ -394,6 +381,12 @@ public enum ExecutionPlanner {
                 binaryCapabilities: binaryCapabilities
             )
             if vld {
+                let plain = hasAudioEncode
+                    ? "Hardware \(plainVideoCodec) + \(audioSummaries.plain)"
+                    : "Hardware \(plainVideoCodec)"
+                let tech = hasAudioEncode
+                    ? "End-to-end GPU IOSurface decode → filter → \(techVTEncoder) (videotoolbox_vld) + \(audioSummaries.tech)"
+                    : "End-to-end GPU IOSurface decode → filter → \(techVTEncoder) (videotoolbox_vld)"
                 return ExecutionPlan(
                     tier: .zeroCopyHardwareTranscode,
                     videoKind: .hardwareGPU,
@@ -404,9 +397,8 @@ public enum ExecutionPlanner {
                     retagsHEVCToHVC1: false,
                     requiresDolbyVisionGuard: hasDoViBlock,
                     dolbyVisionWarningMessage: doViWarning,
-                    reasonSummary: hasAudioEncode
-                        ? "End-to-end GPU IOSurface decode → filter → VideoToolbox encode (videotoolbox_vld) + Audio encoding"
-                        : "End-to-end GPU IOSurface decode → filter → VideoToolbox encode (videotoolbox_vld)"
+                    plainReasonSummary: plain,
+                    reasonSummary: tech
                 )
             }
             
@@ -420,23 +412,37 @@ public enum ExecutionPlanner {
                 || (video.action == .transcodeHEVC_VT && video.videoConfig.profile?.lowercased() == "main422")
             
             let badge = (usesSWCodec ? "Software libav" : "Hybrid HW + CPU") + audioSuffix
-            let reason: String
+            let plainBase: String
+            let techBase: String
             if usesSWCodec {
-                let pipelineLabel: String
                 switch video.action {
                 case .transcodeAV1:
-                    pipelineLabel = "Software SVT-AV1 (libsvtav1) pipeline"
+                    plainBase = "Software AV1"
+                    techBase = "Software SVT-AV1 (libsvtav1) pipeline"
                 case .transcodeUncompressed:
-                    pipelineLabel = video.resolvedUncompressedIs10Bit
-                        ? "Uncompressed 10-Bit 4:2:2 (v210) pipeline"
+                    plainBase = video.resolvedUncompressedIs10Bit ? "Uncompressed 10-Bit 4:2:2" : "Uncompressed 8-Bit 4:2:2"
+                    techBase = video.resolvedUncompressedIs10Bit
+                        ? "Uncompressed 10-Bit 4:2:2 (v210, yuv422p10le) pipeline"
                         : "Uncompressed 8-Bit 4:2:2 (rawvideo 2vuy) pipeline"
+                case .transcodeH264_VT:
+                    plainBase = isTwoPassVideo ? "Software 2-Pass H.264" : "Software H.264"
+                    techBase = isTwoPassVideo ? "Software x264 (libx264 2-Pass VBR) pipeline" : "Software x264 (libx264) pipeline"
+                case .transcodeHEVC_VT:
+                    plainBase = isTwoPassVideo ? "Software 2-Pass HEVC" : "Software HEVC"
+                    techBase = isTwoPassVideo ? "Software x265 (libx265 2-Pass VBR) pipeline" : "Software x265 (libx265) pipeline"
+                case .transcodeProRes:
+                    plainBase = "Software Apple ProRes"
+                    techBase = "Software ProRes (prores_ks) pipeline"
                 default:
-                    pipelineLabel = "Software libx264/libx265/prores_ks pipeline"
+                    plainBase = "Software \(plainVideoCodec)"
+                    techBase = "Software \(plainVideoCodec) pipeline"
                 }
-                reason = hasAudioEncode ? "\(pipelineLabel) + Audio encoding" : pipelineLabel
             } else {
-                reason = hasAudioEncode ? "Hardware VideoToolbox encoder with CPU pixel/format conversion + Audio encoding" : "Hardware VideoToolbox encoder with CPU pixel/format conversion"
+                plainBase = "Hardware \(plainVideoCodec)"
+                techBase = "Hardware VideoToolbox (\(techVTEncoder)) with CPU pixel/format conversion"
             }
+            let plain = hasAudioEncode ? "\(plainBase) + \(audioSummaries.plain)" : plainBase
+            let reason = hasAudioEncode ? "\(techBase) + \(audioSummaries.tech)" : techBase
             return ExecutionPlan(
                 tier: .hybridOrSoftwareLibav,
                 videoKind: usesSWCodec ? .software : .hybrid,
@@ -447,6 +453,7 @@ public enum ExecutionPlanner {
                 retagsHEVCToHVC1: false,
                 requiresDolbyVisionGuard: hasDoViBlock,
                 dolbyVisionWarningMessage: doViWarning,
+                plainReasonSummary: plain,
                 reasonSummary: reason
             )
         }
@@ -454,15 +461,21 @@ public enum ExecutionPlanner {
         // Audio/subtitle-only transcode alongside video stream copy (or audio-only source)
         let hasSelectedVideo = !selectedVideos.isEmpty
         let badge: String
+        let plain: String
         let reason: String
         if !hasSelectedVideo && hasAudioEncode {
             badge = "Audio Encode"
-            reason = "AudioToolbox / libav audio encoding"
+            plain = "\(audioSummaries.plain) Encode"
+            reason = "\(audioSummaries.tech) audio encoding"
         } else if hasAudioEncode {
             badge = retagsHEVC ? "Video Copy (hvc1) + Audio Encode" : "Video Copy + Audio Encode"
-            reason = "Lossless video passthrough paired with AudioToolbox / libav audio encoding"
+            plain = "Lossless Video Copy + \(audioSummaries.plain)"
+            reason = retagsHEVC
+                ? "Lossless video passthrough (hev1→hvc1) + \(audioSummaries.tech)"
+                : "Lossless video passthrough + \(audioSummaries.tech)"
         } else {
             badge = "Lossless Remux"
+            plain = "Lossless Remux"
             reason = retagsHEVC
                 ? "Zero-generation stream copy with automatic hev1→hvc1 Apple playback tag"
                 : "Lossless stream copy with subtitle formatting"
@@ -477,7 +490,70 @@ public enum ExecutionPlanner {
             retagsHEVCToHVC1: retagsHEVC,
             requiresDolbyVisionGuard: false,
             dolbyVisionWarningMessage: nil,
+            plainReasonSummary: plain,
             reasonSummary: reason
+        )
+    }
+    
+    private static func plainVideoFormatName(for track: MediaTrack) -> String {
+        switch track.action {
+        case .transcodeH264_VT: return "H.264"
+        case .transcodeHEVC_VT: return "HEVC"
+        case .transcodeAV1: return "AV1"
+        case .transcodeProRes: return "Apple ProRes"
+        case .transcodeUncompressed:
+            return track.resolvedUncompressedIs10Bit ? "Uncompressed 10-Bit 4:2:2" : "Uncompressed 8-Bit 4:2:2"
+        default: return track.action.title
+        }
+    }
+    
+    private static func formattedAudioSummaries(
+        for audioTracks: [MediaTrack],
+        binaryCapabilities: FFmpegBinaryCapabilities
+    ) -> (plain: String, tech: String) {
+        var plainParts: [String] = []
+        var techParts: [String] = []
+        for track in audioTracks {
+            let p: String
+            let t: String
+            switch track.action {
+            case .transcodeAAC:
+                p = "AAC Audio"
+                t = binaryCapabilities.supportsAudioToolboxAAC ? "AudioToolbox (aac_at)" : "AAC (aac)"
+            case .transcodeMP3:
+                p = "MP3 Audio"
+                t = "MP3 (libmp3lame)"
+            case .transcodeALAC:
+                p = "ALAC Audio"
+                t = "ALAC (alac)"
+            case .transcodeFLAC:
+                p = "FLAC Audio"
+                t = "FLAC (flac)"
+            case .transcodeOpus:
+                p = "Opus Audio"
+                t = "Opus (libopus)"
+            case .transcodeAC3_51:
+                p = "AC3 Audio"
+                t = "AC3 (ac3)"
+            case .transcodeEAC3_51:
+                p = "E-AC3 Audio"
+                t = "E-AC3 (eac3)"
+            case .transcodeWAV:
+                p = "WAV Audio"
+                t = "WAV PCM"
+            case .transcodeAIFF:
+                p = "AIFF Audio"
+                t = "AIFF PCM"
+            default:
+                p = "\(track.action.title) Audio"
+                t = track.action.title
+            }
+            if !plainParts.contains(p) { plainParts.append(p) }
+            if !techParts.contains(t) { techParts.append(t) }
+        }
+        return (
+            plainParts.isEmpty ? "Audio Encode" : plainParts.joined(separator: " + "),
+            techParts.isEmpty ? "Audio encoding" : techParts.joined(separator: " + ")
         )
     }
 }

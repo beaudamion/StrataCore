@@ -57,8 +57,7 @@ public enum TrackAction: String, Codable, CaseIterable, Identifiable, Sendable {
     case transcodeUncompressed = "transcode_uncompressed"
     
     // Audio Transcoding
-    case transcodeAAC_Stereo = "transcode_aac_stereo"
-    case transcodeAAC_51 = "transcode_aac_51"
+    case transcodeAAC = "transcode_aac"
     case transcodeMP3 = "transcode_mp3"
     case transcodeALAC = "transcode_alac"
     case transcodeAC3_51 = "transcode_ac3_51"
@@ -77,6 +76,8 @@ public enum TrackAction: String, Codable, CaseIterable, Identifiable, Sendable {
         let raw = try container.decode(String.self)
         if raw == "transcode_uncompressed_8" || raw == "transcode_uncompressed_10" {
             self = .transcodeUncompressed
+        } else if raw == "transcode_aac_stereo" || raw == "transcode_aac_51" {
+            self = .transcodeAAC
         } else if let action = TrackAction(rawValue: raw) {
             self = action
         } else {
@@ -100,10 +101,8 @@ public enum TrackAction: String, Codable, CaseIterable, Identifiable, Sendable {
             return "Apple ProRes"
         case .transcodeUncompressed:
             return "Uncompressed"
-        case .transcodeAAC_Stereo:
-            return "AAC Stereo"
-        case .transcodeAAC_51:
-            return "AAC 5.1 Surround"
+        case .transcodeAAC:
+            return "AAC"
         case .transcodeMP3:
             return "MP3 (LAME)"
         case .transcodeALAC:
@@ -138,8 +137,7 @@ public enum TrackAction: String, Codable, CaseIterable, Identifiable, Sendable {
     
     public static let audioActions: [TrackAction] = [
         .copy,
-        .transcodeAAC_51,
-        .transcodeAAC_Stereo,
+        .transcodeAAC,
         .transcodeAC3_51,
         .transcodeAIFF,
         .transcodeALAC,
@@ -173,7 +171,7 @@ public enum TrackAction: String, Codable, CaseIterable, Identifiable, Sendable {
     
     public var supportsAudioConfig: Bool {
         switch self {
-        case .transcodeAAC_Stereo, .transcodeAAC_51, .transcodeMP3, .transcodeALAC,
+        case .transcodeAAC, .transcodeMP3, .transcodeALAC,
              .transcodeAC3_51, .transcodeEAC3_51, .transcodeOpus, .transcodeFLAC,
              .transcodeWAV, .transcodeAIFF:
             return true
@@ -980,10 +978,8 @@ public struct AudioEncodingConfig: Hashable, Codable, Sendable {
             return AudioEncodingConfig(bitrate: "320k", isVBR: false)
         case .transcodeALAC:
             return AudioEncodingConfig(bitrate: "Lossless", bitDepth: nil)
-        case .transcodeAAC_Stereo:
-            return AudioEncodingConfig(bitrate: "192k", channels: 2, isVBR: true, aacMode: .vbrQuality, aacQuality: 2)
-        case .transcodeAAC_51:
-            return AudioEncodingConfig(bitrate: "384k", channels: 6, isVBR: true, aacMode: .vbrQuality, aacQuality: 2)
+        case .transcodeAAC:
+            return AudioEncodingConfig(bitrate: "192k", channels: nil, isVBR: true, aacMode: .vbrQuality, aacQuality: 2)
         case .transcodeAC3_51:
             return AudioEncodingConfig(bitrate: "640k", channels: 6)
         case .transcodeEAC3_51:
@@ -1452,7 +1448,7 @@ public struct MediaTrack: Identifiable, Hashable, Codable, Sendable {
             case .transcodeH264_VT, .transcodeHEVC_VT, .transcodeAV1: return "mp4"
             
             // Audio Transcoding
-            case .transcodeALAC, .transcodeAAC_Stereo, .transcodeAAC_51: return "m4a"
+            case .transcodeALAC, .transcodeAAC: return "m4a"
             case .transcodeMP3: return "mp3"
             case .transcodeFLAC: return "flac"
             case .transcodeOpus: return "opus"
