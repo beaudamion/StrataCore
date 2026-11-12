@@ -181,6 +181,13 @@ public final class ProbePipeline {
     
     /// Probes a given media file URL using `ffprobe` and returns a deserialized `MediaFile` model.
     public func probe(fileURL: URL) async throws -> MediaFile {
+        guard let ffprobePath = FFmpegLocator.shared.ffprobePath else {
+            throw ProbeError.ffprobeNotFound
+        }
+        return try await probe(fileURL: fileURL, ffprobePath: ffprobePath)
+    }
+    
+    internal func probe(fileURL: URL, ffprobePath: String) async throws -> MediaFile {
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
             throw ProbeError.fileNotFound(fileURL)
         }
@@ -197,10 +204,6 @@ public final class ProbePipeline {
         if let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
            let size = attrs[.size] as? UInt64, size == 0 {
             throw ProbeError.emptyFile(fileURL.lastPathComponent)
-        }
-        
-        guard let ffprobePath = FFmpegLocator.shared.ffprobePath else {
-            throw ProbeError.ffprobeNotFound
         }
         
         let arguments = [
@@ -222,10 +225,10 @@ public final class ProbePipeline {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
         
-        let (terminationStream, terminationContinuation) = AsyncStream<Int32>.makeStream()
+        let (terminationStream, terminationContinuation) = AsyncStream<(Int32, Process.TerminationReason)>.makeStream()
         process.terminationHandler = { terminatedProcess in
             terminatedProcess.terminationHandler = nil
-            terminationContinuation.yield(terminatedProcess.terminationStatus)
+            terminationContinuation.yield((terminatedProcess.terminationStatus, terminatedProcess.terminationReason))
             terminationContinuation.finish()
         }
         
@@ -239,42 +242,23 @@ public final class ProbePipeline {
         
         let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
         let errData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-        var exitStatus: Int32?
-        for await status in terminationStream {
-            exitStatus = status
+        var exitInfo: (Int32, Process.TerminationReason)?
+        for await info in terminationStream {
+            exitInfo = info
             break
         }
         process.terminationHandler = nil
-        let finalStatus = exitStatus ?? (process.isRunning ? -1 : process.terminationStatus)
+        let finalStatus = exitInfo?.0 ?? (process.isRunning ? -1 : process.terminationStatus)
+        let finalReason = exitInfo?.1 ?? .exit
         
-        if finalStatus != 0 {
+        if finalStatus != 0 || finalReason == .uncaughtSignal {
             let rawStderr = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let ext = fileURL.pathExtension.lowercased()
-            
-            // Check if extension is not recognized as a media format
-            if !Self.commonMediaExtensions.contains(ext) {
-                throw ProbeError.unsupportedFormat(extension: fileURL.pathExtension.uppercased())
-            }
-            
-            if rawStderr.localizedCaseInsensitiveContains("Invalid data found when processing input") {
-                throw ProbeError.corruptedMedia("The media file structure is invalid or corrupt.")
-            } else if rawStderr.localizedCaseInsensitiveContains("moov atom not found") {
-                throw ProbeError.corruptedMedia("Missing index header (moov atom not found). The file may be incomplete or still downloading.")
-            } else if rawStderr.localizedCaseInsensitiveContains("EBML") || rawStderr.localizedCaseInsensitiveContains("header") {
-                throw ProbeError.corruptedMedia("Damaged or truncated container header.")
-            } else if rawStderr.localizedCaseInsensitiveContains("Permission denied") {
-                throw ProbeError.permissionDenied(fileURL)
-            } else if rawStderr.localizedCaseInsensitiveContains("No such file") {
-                throw ProbeError.fileNotFound(fileURL)
-            } else if rawStderr.isEmpty {
-                throw ProbeError.corruptedMedia("Unable to read media streams.")
-            } else {
-                var cleaned = rawStderr
-                if let colonRange = cleaned.range(of: ": ") {
-                    cleaned = String(cleaned[colonRange.upperBound...])
-                }
-                throw ProbeError.corruptedMedia(cleaned)
-            }
+            throw Self.classifyFailure(
+                rawStderr: rawStderr,
+                terminationStatus: finalStatus,
+                terminationReason: finalReason,
+                fileURL: fileURL
+            )
         }
         
         let probeResult: FFprobeOutput
@@ -332,6 +316,56 @@ public final class ProbePipeline {
         }
         
         return mediaFile
+    }
+    
+    internal static func classifyFailure(
+        rawStderr: String,
+        terminationStatus: Int32,
+        terminationReason: Process.TerminationReason,
+        fileURL: URL
+    ) -> ProbeError {
+        let isDynamicLinkerFailure = rawStderr.localizedCaseInsensitiveContains("dyld[")
+            || rawStderr.localizedCaseInsensitiveContains("dyld:")
+            || rawStderr.localizedCaseInsensitiveContains("Library not loaded")
+            || rawStderr.localizedCaseInsensitiveContains("Reason: tried:")
+            || rawStderr.localizedCaseInsensitiveContains("Symbol not found")
+            || rawStderr.localizedCaseInsensitiveContains("mach-o")
+            || rawStderr.localizedCaseInsensitiveContains("bad cpu type")
+            || rawStderr.localizedCaseInsensitiveContains("bad executable")
+        
+        if isDynamicLinkerFailure || terminationReason == .uncaughtSignal || terminationStatus < 0 {
+            let firstLine = rawStderr
+                .components(separatedBy: .newlines)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .first(where: { !$0.isEmpty })
+            let detail = firstLine ?? "FFprobe terminated unexpectedly (status \(terminationStatus))."
+            return .executionFailed("FFprobe engine could not start: \(detail)")
+        }
+        
+        let ext = fileURL.pathExtension.lowercased()
+        if !Self.commonMediaExtensions.contains(ext) {
+            return .unsupportedFormat(extension: fileURL.pathExtension.uppercased())
+        }
+        
+        if rawStderr.localizedCaseInsensitiveContains("Invalid data found when processing input") {
+            return .corruptedMedia("The media file structure is invalid or corrupt.")
+        } else if rawStderr.localizedCaseInsensitiveContains("moov atom not found") {
+            return .corruptedMedia("Missing index header (moov atom not found). The file may be incomplete or still downloading.")
+        } else if rawStderr.localizedCaseInsensitiveContains("EBML") || rawStderr.localizedCaseInsensitiveContains("header") {
+            return .corruptedMedia("Damaged or truncated container header.")
+        } else if rawStderr.localizedCaseInsensitiveContains("Permission denied") {
+            return .permissionDenied(fileURL)
+        } else if rawStderr.localizedCaseInsensitiveContains("No such file") {
+            return .fileNotFound(fileURL)
+        } else if rawStderr.isEmpty {
+            return .corruptedMedia("Unable to read media streams.")
+        } else {
+            var cleaned = rawStderr
+            if let colonRange = cleaned.range(of: ": ") {
+                cleaned = String(cleaned[colonRange.upperBound...])
+            }
+            return .corruptedMedia(cleaned)
+        }
     }
     
     /// Probes an external file (video, audio, or subtitle) and returns its streams as external MediaTrack objects.
