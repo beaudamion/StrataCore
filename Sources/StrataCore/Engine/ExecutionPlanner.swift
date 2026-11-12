@@ -14,8 +14,19 @@ public enum ExecutionTier: String, Codable, Equatable, Sendable {
     }
 }
 
+public enum VideoExecutionKind: String, Codable, Equatable, Sendable {
+    case none
+    case losslessCopy
+    case hardwareGPU
+    case hardwareTwoPass
+    case hybrid
+    case software
+}
+
 public struct ExecutionPlan: Equatable, Sendable {
     public let tier: ExecutionTier
+    public let videoKind: VideoExecutionKind
+    public let hasAudioEncode: Bool
     public let badgeTitle: String
     public let usesZeroCopyVLD: Bool
     public let usesNativeVideoToolbox: Bool
@@ -26,6 +37,8 @@ public struct ExecutionPlan: Equatable, Sendable {
     
     public init(
         tier: ExecutionTier,
+        videoKind: VideoExecutionKind? = nil,
+        hasAudioEncode: Bool? = nil,
         badgeTitle: String,
         usesZeroCopyVLD: Bool,
         usesNativeVideoToolbox: Bool,
@@ -35,6 +48,23 @@ public struct ExecutionPlan: Equatable, Sendable {
         reasonSummary: String
     ) {
         self.tier = tier
+        let inferredAudioEncode = hasAudioEncode ?? badgeTitle.contains("Audio Encode")
+        self.hasAudioEncode = inferredAudioEncode
+        if let explicitKind = videoKind {
+            self.videoKind = explicitKind
+        } else if badgeTitle == "Audio Encode" {
+            self.videoKind = .none
+        } else if badgeTitle.contains("Native 2-Pass") {
+            self.videoKind = .hardwareTwoPass
+        } else if badgeTitle.contains("Zero-Copy") {
+            self.videoKind = .hardwareGPU
+        } else if badgeTitle.contains("Hybrid") {
+            self.videoKind = .hybrid
+        } else if badgeTitle.contains("Software") {
+            self.videoKind = .software
+        } else {
+            self.videoKind = .losslessCopy
+        }
         self.badgeTitle = badgeTitle
         self.usesZeroCopyVLD = usesZeroCopyVLD
         self.usesNativeVideoToolbox = usesNativeVideoToolbox
@@ -48,19 +78,20 @@ public struct ExecutionPlan: Equatable, Sendable {
         if showTechnicalDetails {
             return badgeTitle
         }
-        switch badgeTitle {
-        case "Lossless Remux", "Lossless Smart-Cut":
-            return "Lossless Remux"
-        case "Native 2-Pass HW", "Zero-Copy HW":
-            return "Hardware Encoding"
-        case "Hybrid HW + CPU":
-            return "Hybrid Encoding"
-        case "Software libav":
-            return "Software Encoding"
-        case "Audio Transcode + hvc1 Copy", "Video Copy + Audio Encode":
-            return "Audio Convert"
-        default:
-            return badgeTitle
+        let suffix = hasAudioEncode ? " + Audio Encode" : ""
+        switch videoKind {
+        case .none:
+            return hasAudioEncode ? "Audio Encode" : "Lossless Remux"
+        case .losslessCopy:
+            return "Lossless Remux" + suffix
+        case .hardwareGPU:
+            return "Hardware Encoding" + suffix
+        case .hardwareTwoPass:
+            return "Hardware 2-Pass Encoding" + suffix
+        case .hybrid:
+            return "Hybrid Encoding" + suffix
+        case .software:
+            return "Software Encoding" + suffix
         }
     }
     
@@ -68,25 +99,37 @@ public struct ExecutionPlan: Equatable, Sendable {
         if showTechnicalDetails {
             return reasonSummary
         }
-        switch badgeTitle {
-        case "Lossless Remux":
+        switch videoKind {
+        case .none:
+            return "Encodes selected audio tracks"
+        case .losslessCopy:
+            if hasAudioEncode {
+                return retagsHEVCToHVC1
+                    ? "Copies video without re-encoding (formatted for Apple QuickTime) while encoding selected audio"
+                    : "Copies video without re-encoding while encoding selected audio tracks"
+            }
+            if badgeTitle == "Lossless Smart-Cut" {
+                return "Trims and copies video and audio without re-encoding"
+            }
             return retagsHEVCToHVC1
                 ? "Copies video and audio without re-encoding, formatted for Apple QuickTime playback"
                 : "Copies video and audio without re-encoding for zero quality loss"
-        case "Lossless Smart-Cut":
-            return "Trims and copies video and audio without re-encoding"
-        case "Native 2-Pass HW":
-            return "High-quality two-pass hardware encoding on Apple Silicon"
-        case "Zero-Copy HW":
-            return "Fast GPU-accelerated video encoding on Apple Silicon"
-        case "Hybrid HW + CPU":
-            return "Hardware video encoding paired with CPU format conversion"
-        case "Software libav":
-            return "CPU-based encoding for specialized formats or multi-pass quality"
-        case "Audio Transcode + hvc1 Copy", "Video Copy + Audio Encode":
-            return "Copies video without re-encoding while converting selected audio tracks"
-        default:
-            return reasonSummary
+        case .hardwareGPU:
+            return hasAudioEncode
+                ? "Fast GPU-accelerated video encoding on Apple Silicon paired with audio encoding"
+                : "Fast GPU-accelerated video encoding on Apple Silicon"
+        case .hardwareTwoPass:
+            return hasAudioEncode
+                ? "High-quality two-pass hardware encoding on Apple Silicon paired with audio encoding"
+                : "High-quality two-pass hardware encoding on Apple Silicon"
+        case .hybrid:
+            return hasAudioEncode
+                ? "Hardware video encoding paired with CPU pixel/format conversion and audio encoding"
+                : "Hardware video encoding paired with CPU pixel/format conversion"
+        case .software:
+            return hasAudioEncode
+                ? "CPU-based video encoding for specialized formats or multi-pass quality, paired with audio encoding"
+                : "CPU-based video encoding for specialized formats or multi-pass quality"
         }
     }
 }
@@ -96,17 +139,26 @@ public enum ExecutionPlanner {
         if showTechnicalDetails {
             return rawLabel
         }
-        switch rawLabel {
-        case "Zero-Copy HW", "Native 2-Pass HW":
-            return "Hardware Encoding"
+        let hasAudio = rawLabel.contains("+ Audio Encode")
+        let base = rawLabel
+            .replacingOccurrences(of: " + Audio Encode", with: "")
+            .trimmingCharacters(in: .whitespaces)
+        let suffix = hasAudio ? " + Audio Encode" : ""
+        switch base {
+        case "Zero-Copy HW":
+            return "Hardware Encoding" + suffix
+        case "Native 2-Pass HW":
+            return "Hardware 2-Pass Encoding" + suffix
         case "Hybrid HW + CPU":
-            return "Hybrid Encoding"
+            return "Hybrid Encoding" + suffix
         case "Software libav":
-            return "Software Encoding"
-        case "Lossless Smart-Cut":
-            return "Lossless Remux"
-        case "Audio Transcode + hvc1 Copy", "Video Copy + Audio Encode":
-            return "Audio Convert"
+            return "Software Encoding" + suffix
+        case "Lossless Remux", "Lossless Smart-Cut", "Video Copy", "Video Copy (hvc1)":
+            return "Lossless Remux" + suffix
+        case "Audio Transcode + hvc1 Copy":
+            return "Lossless Remux + Audio Encode"
+        case "Audio Encode":
+            return "Audio Encode"
         default:
             return rawLabel
         }
@@ -278,6 +330,7 @@ public enum ExecutionPlanner {
     ) -> ExecutionPlan {
         let selectedTracks = file.tracks.filter { $0.isSelected }
         let selectedVideos = selectedTracks.filter { $0.mediaType == .video }
+        let hasAudioEncode = selectedTracks.contains { $0.mediaType == .audio && $0.action.isTranscode }
         let hasAnyTranscode = selectedTracks.contains { $0.action.isTranscode }
         let isMP4Like = (options.targetContainer == .mp4 || options.targetContainer == .m4v || options.targetContainer == .mov)
         
@@ -303,6 +356,8 @@ public enum ExecutionPlanner {
                 : "Zero-generation packet stream copy (no video or audio re-encoding)"
             return ExecutionPlan(
                 tier: .losslessRemuxOrSmartCut,
+                videoKind: selectedVideos.isEmpty ? VideoExecutionKind.none : .losslessCopy,
+                hasAudioEncode: false,
                 badgeTitle: badge,
                 usesZeroCopyVLD: false,
                 usesNativeVideoToolbox: false,
@@ -317,6 +372,8 @@ public enum ExecutionPlanner {
         if canUseNativeVideoToolboxTwoPass(for: file, options: options) {
             return ExecutionPlan(
                 tier: .zeroCopyHardwareTranscode,
+                videoKind: .hardwareTwoPass,
+                hasAudioEncode: false,
                 badgeTitle: "Native 2-Pass HW",
                 usesZeroCopyVLD: true,
                 usesNativeVideoToolbox: true,
@@ -329,6 +386,7 @@ public enum ExecutionPlanner {
         
         // Check VideoToolbox / Zero-Copy VLD vs Hybrid/Software
         if let video = selectedVideos.first, video.action != .copy {
+            let audioSuffix = hasAudioEncode ? " + Audio Encode" : ""
             let vld = canUseZeroCopyVLD(
                 for: video,
                 useHardwareAcceleration: options.useHardwareAcceleration,
@@ -338,27 +396,34 @@ public enum ExecutionPlanner {
             if vld {
                 return ExecutionPlan(
                     tier: .zeroCopyHardwareTranscode,
-                    badgeTitle: "Zero-Copy HW",
+                    videoKind: .hardwareGPU,
+                    hasAudioEncode: hasAudioEncode,
+                    badgeTitle: "Zero-Copy HW" + audioSuffix,
                     usesZeroCopyVLD: true,
                     usesNativeVideoToolbox: false,
                     retagsHEVCToHVC1: false,
                     requiresDolbyVisionGuard: hasDoViBlock,
                     dolbyVisionWarningMessage: doViWarning,
-                    reasonSummary: "End-to-end GPU IOSurface decode → filter → VideoToolbox encode (videotoolbox_vld)"
+                    reasonSummary: hasAudioEncode
+                        ? "End-to-end GPU IOSurface decode → filter → VideoToolbox encode (videotoolbox_vld) + Audio encoding"
+                        : "End-to-end GPU IOSurface decode → filter → VideoToolbox encode (videotoolbox_vld)"
                 )
             }
             
+            let isTwoPassVideo = (video.action == .transcodeH264_VT || video.action == .transcodeHEVC_VT)
+                && (video.videoConfig.multiPass || video.videoConfig.effectiveRateControlMode == .twoPassVBR)
             let usesSWCodec = !options.useHardwareAcceleration
-                || video.videoConfig.multiPass
-                || (video.videoConfig.effectiveRateControlMode == .twoPassVBR)
+                || isTwoPassVideo
                 || (video.action == .transcodeHEVC_VT && video.videoConfig.profile?.lowercased() == "main422")
             
-            let badge = usesSWCodec ? "Software libav" : "Hybrid HW + CPU"
+            let badge = (usesSWCodec ? "Software libav" : "Hybrid HW + CPU") + audioSuffix
             let reason = usesSWCodec
-                ? "Software libx264/libx265/prores_ks pipeline"
-                : "Hardware VideoToolbox encoder with CPU pixel/format conversion"
+                ? (hasAudioEncode ? "Software libx264/libx265/prores_ks pipeline + Audio encoding" : "Software libx264/libx265/prores_ks pipeline")
+                : (hasAudioEncode ? "Hardware VideoToolbox encoder with CPU pixel/format conversion + Audio encoding" : "Hardware VideoToolbox encoder with CPU pixel/format conversion")
             return ExecutionPlan(
                 tier: .hybridOrSoftwareLibav,
+                videoKind: usesSWCodec ? .software : .hybrid,
+                hasAudioEncode: hasAudioEncode,
                 badgeTitle: badge,
                 usesZeroCopyVLD: false,
                 usesNativeVideoToolbox: false,
@@ -369,16 +434,33 @@ public enum ExecutionPlanner {
             )
         }
         
-        // Audio/subtitle-only transcode alongside video stream copy
+        // Audio/subtitle-only transcode alongside video stream copy (or audio-only source)
+        let hasSelectedVideo = !selectedVideos.isEmpty
+        let badge: String
+        let reason: String
+        if !hasSelectedVideo && hasAudioEncode {
+            badge = "Audio Encode"
+            reason = "AudioToolbox / libav audio encoding"
+        } else if hasAudioEncode {
+            badge = retagsHEVC ? "Video Copy (hvc1) + Audio Encode" : "Video Copy + Audio Encode"
+            reason = "Lossless video passthrough paired with AudioToolbox / libav audio encoding"
+        } else {
+            badge = "Lossless Remux"
+            reason = retagsHEVC
+                ? "Zero-generation stream copy with automatic hev1→hvc1 Apple playback tag"
+                : "Lossless stream copy with subtitle formatting"
+        }
         return ExecutionPlan(
-            tier: .hybridOrSoftwareLibav,
-            badgeTitle: retagsHEVC ? "Audio Transcode + hvc1 Copy" : "Video Copy + Audio Encode",
+            tier: (hasAudioEncode || !hasSelectedVideo) ? .hybridOrSoftwareLibav : .losslessRemuxOrSmartCut,
+            videoKind: hasSelectedVideo ? .losslessCopy : VideoExecutionKind.none,
+            hasAudioEncode: hasAudioEncode,
+            badgeTitle: badge,
             usesZeroCopyVLD: false,
             usesNativeVideoToolbox: false,
             retagsHEVCToHVC1: retagsHEVC,
             requiresDolbyVisionGuard: false,
             dolbyVisionWarningMessage: nil,
-            reasonSummary: "Lossless video passthrough paired with AudioToolbox / libav audio encoding"
+            reasonSummary: reason
         )
     }
 }

@@ -215,14 +215,74 @@ struct MediaEngineUpgradeTests {
         #expect(allowedPlan.requiresDolbyVisionGuard == false)
         
         // Plain-English vs Technical ExecutionPlan display strings & PerceptualQCMetric display labels
-        #expect(planNative.displayBadgeTitle(showTechnicalDetails: false) == "Hardware Encoding")
+        #expect(planNative.videoKind == .hardwareTwoPass)
+        #expect(planNative.hasAudioEncode == false)
+        #expect(planNative.displayBadgeTitle(showTechnicalDetails: false) == "Hardware 2-Pass Encoding")
         #expect(planNative.displayBadgeTitle(showTechnicalDetails: true) == "Native 2-Pass HW")
         #expect(!planNative.displayReasonSummary(showTechnicalDetails: false).contains("VideoToolbox"))
+        #expect(planVLD.videoKind == .hardwareGPU)
+        #expect(planVLD.displayBadgeTitle(showTechnicalDetails: false) == "Hardware Encoding")
+        #expect(planHybrid.videoKind == .hybrid)
         #expect(planHybrid.displayBadgeTitle(showTechnicalDetails: false) == "Hybrid Encoding")
         #expect(planHybrid.displayBadgeTitle(showTechnicalDetails: true) == "Hybrid HW + CPU")
+        #expect(planSW.videoKind == .software)
         #expect(planSW.displayBadgeTitle(showTechnicalDetails: false) == "Software Encoding")
         #expect(planSW.displayBadgeTitle(showTechnicalDetails: true) == "Software libav")
         #expect(!planSW.displayReasonSummary(showTechnicalDetails: false).contains("libx264"))
+        #expect(ExecutionPlanner.displayTierLabel("Native 2-Pass HW", showTechnicalDetails: false) == "Hardware 2-Pass Encoding")
+        #expect(ExecutionPlanner.displayTierLabel("Zero-Copy HW + Audio Encode", showTechnicalDetails: false) == "Hardware Encoding + Audio Encode")
+        
+        // Audio Encode suffix combinations & Video Copy + Audio Encode + Audio-only
+        var fileCopyPlusAudio = fileCopy
+        fileCopyPlusAudio.tracks[1].action = .transcodeAAC_Stereo
+        let planCopyAudio = ExecutionPlanner.plan(
+            for: fileCopyPlusAudio,
+            options: RemuxOptions(targetContainer: .mp4, outputURL: URL(fileURLWithPath: "/tmp/out.mp4"))
+        )
+        #expect(planCopyAudio.videoKind == .losslessCopy)
+        #expect(planCopyAudio.hasAudioEncode == true)
+        #expect(planCopyAudio.displayBadgeTitle(showTechnicalDetails: false) == "Lossless Remux + Audio Encode")
+        #expect(planCopyAudio.displayBadgeTitle(showTechnicalDetails: true) == "Video Copy (hvc1) + Audio Encode")
+        
+        var fileHWPlusAudio = fileVLD
+        fileHWPlusAudio.tracks[1].action = .transcodeAAC_Stereo
+        let planHWAudio = ExecutionPlanner.plan(
+            for: fileHWPlusAudio,
+            options: RemuxOptions(targetContainer: .mp4, outputURL: URL(fileURLWithPath: "/tmp/out.mp4"))
+        )
+        #expect(planHWAudio.videoKind == .hardwareGPU)
+        #expect(planHWAudio.hasAudioEncode == true)
+        #expect(planHWAudio.displayBadgeTitle(showTechnicalDetails: false) == "Hardware Encoding + Audio Encode")
+        #expect(planHWAudio.displayBadgeTitle(showTechnicalDetails: true) == "Zero-Copy HW + Audio Encode")
+        
+        let audioOnlyFile = MediaFile(
+            url: URL(fileURLWithPath: "/tmp/in.flac"),
+            filename: "in.flac",
+            fileSize: 500_000,
+            containerFormat: "flac",
+            duration: 20.0,
+            tracks: [MediaTrack(streamIndex: 0, mediaType: .audio, codecName: "flac", action: .transcodeAAC_Stereo)]
+        )
+        let planAudioOnly = ExecutionPlanner.plan(
+            for: audioOnlyFile,
+            options: RemuxOptions(targetContainer: .mp4, outputURL: URL(fileURLWithPath: "/tmp/out.m4a"))
+        )
+        #expect(planAudioOnly.videoKind == .none)
+        #expect(planAudioOnly.hasAudioEncode == true)
+        #expect(planAudioOnly.displayBadgeTitle(showTechnicalDetails: false) == "Audio Encode")
+        
+        // ProRes keeps HW ProRes even if stale multiPass flag is set on videoConfig
+        var proresFile = fileVLD
+        proresFile.tracks[0].action = .transcodeProRes
+        proresFile.tracks[0].videoConfig.profile = "4" // ProRes 4444 uses CPU pixel path -> Hybrid, NOT Software
+        proresFile.tracks[0].videoConfig.multiPass = true
+        let planProRes = ExecutionPlanner.plan(
+            for: proresFile,
+            options: RemuxOptions(targetContainer: .mov, outputURL: URL(fileURLWithPath: "/tmp/out.mov"))
+        )
+        #expect(planProRes.videoKind == .hybrid)
+        #expect(planProRes.displayBadgeTitle(showTechnicalDetails: false) == "Hybrid Encoding")
+        
         #expect(PerceptualQCMetric.xpsnr.displayName(showTechnicalDetails: false) == "Fast Quality Score")
         #expect(PerceptualQCMetric.libvmaf.displayName(showTechnicalDetails: false) == "Detailed Quality Score")
         #expect(PerceptualQCMetric.xpsnr.displayName(showTechnicalDetails: true).contains("XPSNR"))
@@ -507,7 +567,7 @@ struct MediaEngineUpgradeTests {
             lastA = u
         }
         #expect((lastA?.progress ?? 0) >= 0.99)
-        #expect(lastA?.executionTierLabel == "Zero-Copy HW")
+        #expect(lastA?.executionTierLabel == "Zero-Copy HW + Audio Encode")
         #expect(lastA?.qcSummary?.contains("XPSNR Y:") == true)
         let probedVLD = try await ProbePipeline.shared.probe(fileURL: vldOutURL)
         #expect(probedVLD.videoTracks.first?.codecName == "hevc")
