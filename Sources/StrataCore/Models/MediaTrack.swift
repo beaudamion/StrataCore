@@ -73,7 +73,7 @@ public enum TrackAction: String, Codable, CaseIterable, Identifiable, Sendable {
     public var title: String {
         switch self {
         case .copy:
-            return "Passthrough (Copy)"
+            return "Passthrough"
         case .transcodeH264_VT:
             return "H.264"
         case .transcodeHEVC_VT:

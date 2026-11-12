@@ -980,4 +980,13 @@ struct StrataCoreTests {
         )
         #expect(disabledCrossFolder.lastPathComponent == "Feature_Film.mp4")
     }
+    
+    @Test("Compact UI Labels for Passthrough Action and Undetermined Language")
+    func testCompactTrackActionAndLanguageLabels() {
+        #expect(TrackAction.copy.title == "Passthrough")
+        #expect(LanguageDirectory.commonLanguages.first?.code == "und")
+        #expect(LanguageDirectory.commonLanguages.first?.displayName == "Undet. (und)")
+        #expect(LanguageDirectory.displayName(for: "und") == "Undet.")
+        #expect(LanguageDirectory.displayName(for: "") == "Undet.")
+    }
 }
