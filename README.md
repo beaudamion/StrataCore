@@ -1,6 +1,6 @@
 # Strata
 
-A native macOS GUI and engine for remuxing media, managing tracks, and extracting audio/subtitle streams using FFmpeg. Built with Swift and SwiftUI for Apple Silicon.
+An Apple Silicon-native media workstation for lossless remuxing, hardware encoding, and track mastering on macOS. Built with Swift, SwiftUI, and AppKit.
 
 ![macOS 14+](https://img.shields.io/badge/macOS-14%2B%20Sonoma%20%2F%20Sequoia-black?style=flat-square&logo=apple)
 ![Apple Silicon](https://img.shields.io/badge/Architecture-Apple%20Silicon%20(arm64)-orange?style=flat-square)
@@ -12,10 +12,10 @@ A native macOS GUI and engine for remuxing media, managing tracks, and extractin
 
 ## Overview
 
-**StrataCore** is the core media processing and remuxing engine powering **Strata**.
+**StrataCore** is the core media processing engine powering **Strata**, an Apple Silicon-native media workstation for lossless remuxing, hardware encoding, and track mastering on macOS.
 
 This public repository serves two purposes:
-1. **Engine Source**: Hosts the core engine source code (`RemuxEngine`, `ProbePipeline`, `FFmpegLocator`, `BatchEngine`, and stream models) for inspection, auditing, and building.
+1. **Engine Source**: Hosts the core Swift media processing engine (`RemuxEngine`, `ProbePipeline`, `FFmpegLocator`, `BatchEngine`, and stream models) for inspection, auditing, and building.
 2. **Release Distribution**: Provides pre-compiled application releases of **Strata.app** for macOS Apple Silicon under [Releases](https://github.com/beaudamion/StrataCore/releases).
 
 All media probing, remuxing, and transcoding operations run 100% locally on-device. The engine contains no network code, telemetry, or remote dependencies.
@@ -26,41 +26,40 @@ All media probing, remuxing, and transcoding operations run 100% locally on-devi
 
 Strata handles the primary media containers and codecs supported by FFmpeg:
 
-- **Containers**: MKV, MP4, MOV, M4V, WebM (input support also includes AVI, TS, M2TS, FLV, OGG)
-- **Video Codecs**: Passthrough for H.264, HEVC, Apple ProRes, AV1, VP9, VP8, and others; hardware encoding for H.264, HEVC, and ProRes via VideoToolbox
-- **Audio Codecs**: Passthrough and extraction for AAC, AC-3, E-AC-3, DTS, TrueHD, FLAC, ALAC, Opus, MP3, and PCM (WAV, AIFF); transcoding to AAC, ALAC, FLAC, Opus, MP3, and uncompressed PCM
-- **Subtitles**: SRT, ASS/SSA, WebVTT, mov_text, PGS, and VobSub
+- **Containers**: MP4, MKV, MOV, M4V, WebM (input inspection also supports AVI, TS, M2TS, FLV, OGG)
+- **Video Codecs**: Passthrough for H.264, HEVC, Apple ProRes, AV1, VP9, VP8, and others; VideoToolbox hardware encoding for H.264, HEVC (8/10-bit, alpha, 4:2:2), and Apple ProRes (Proxy through 4444 XQ) with automatic software fallback
+- **Audio Codecs**: Passthrough and extraction for AAC, AC-3, E-AC-3, DTS, TrueHD, FLAC, ALAC, Opus, MP3, and PCM; encoding to AAC (Stereo / 5.1), ALAC, FLAC, Opus, MP3, AC-3, E-AC-3, WAV, and AIFF
+- **Subtitles**: SRT, ASS/SSA, WebVTT, `mov_text`, PGS, and VobSub
 
 ---
 
 ## Features
 
-### Lossless Remuxing
-- **Direct Stream Copy**: Repackage containers (MKV, MP4, MOV, WebM) without re-encoding video streams (`-c copy`).
-- **MP4 Subtitle Handling**: Converts text subtitles to `mov_text` when targeting MP4/M4V containers.
-- **FastStart & Metadata**: Relocates the `moov` atom to the start of MP4 files for streaming (`+faststart`) and strips global metadata (`-map_metadata -1`).
+### Lossless Remuxing & Track Control
+- **Direct Stream Copy**: Repackage containers (MP4, MKV, MOV, M4V, WebM) without re-encoding video streams (`-c copy`).
+- **Multi-Track Multiplexing**: Reorder tracks via drag-and-drop, disable unwanted streams, and import external audio, subtitle, or secondary video tracks with per-container validation.
+- **MP4 Web & Metadata Controls**: Relocate the `moov` header (`+faststart`), strip global metadata or chapters, and convert text subtitles to `mov_text` when targeting MP4/M4V.
 
-### Audio & Stream Extraction
-- **Audio Transcoding**: Convert audio streams to AAC, ALAC, FLAC, Opus, MP3, or uncompressed PCM (WAV/AIFF). Configure bitrates, sample rates (44.1 kHz to 192 kHz), and channel layouts (Mono, Stereo, 5.1).
-- **Stem Extraction**: Export individual audio or subtitle tracks directly to standalone files without remuxing the full container.
-- **Custom Output Naming**: Name exports with pattern tokens (`{filename}`, `{title}`, `{lang}`, `{codec}`, `{channels}`) with real-time path previews.
+### VideoToolbox & Segmented Parallel Encoding
+- **Hardware Acceleration**: Accelerate decoding and H.264, HEVC, and Apple ProRes encoding via macOS VideoToolbox, with automatic software fallback when profiles or hardware limits require it.
+- **Segmented Parallel Exports**: Detect physical Apple Silicon Media Engines and active VideoToolbox sessions via IOKit, splitting eligible single-file exports at keyframe boundaries across idle hardware engines while keeping audio sample-accurate.
+- **Per-Track Video Controls**: Configure bitrate, frame rate, color space (Rec. 709 / Rec. 601 / Rec. 2020 HLG & PQ), field order, profile, B-frame reordering, keyframe interval, alpha preservation, and 2-pass VBR (`x264` / `x265`).
 
-### Multi-Track Multiplexing
-- **Import External Tracks**: Add external audio commentary, dubs, subtitles, or secondary video tracks into an existing file.
-- **Container Validation**: Enforces single-video stream constraints for MP4 containers while allowing multi-video tracks in MKV.
+### Audio Encoding & Stem Extraction
+- **Audio Conversion**: Encode tracks to AAC, ALAC, FLAC, Opus, MP3, AC-3, E-AC-3, WAV, or AIFF with selectable bitrate, sample rate (up to 192 kHz), bit depth, and channel layouts.
+- **Standalone Track Extraction**: Export individual video, audio, or subtitle streams without remuxing the full container.
+- **Pattern Naming**: Format extracted filenames with tokens (`{filename}`, `{title}`, `{lang}`, `{codec}`, `{index}`, `{channels}`) and live previews.
 
-### VideoToolbox Encoding
-- **Hardware Acceleration**: Re-encode video using Apple Silicon VideoToolbox encoders (H.264, HEVC, and ProRes) when passthrough is not suitable.
-- **Stream Passthrough**: Video tracks default to stream copy to avoid unnecessary re-encoding or quality loss.
+### Media Inspector & Native macOS UI
+- **Stream Telemetry Inspector**: View detailed container, chapter, bitrate, color, HDR, and codec metadata for loaded files with one-click spec copying.
+- **Liquid Glass Interface**: Built with macOS vibrancy, hardware-backed Liquid Glass refraction controls, instant drag-and-drop overlays, and contextual hover tooltips.
 
-### Batch Processing
-- **Queue System**: Process multiple files sequentially with progress reporting (percentage, speed multiplier, elapsed time, ETA).
-- **Single-to-Queue**: Configure stream selections and audio options in single mode and dispatch them to the batch queue.
-- **Queue Presets**: Apply batch-wide container rules, audio conversion strategies, and subtitle filtering.
+### Batch Queue & Automation
+- **Queue Processing**: Convert or remux multiple files sequentially with live per-item progress, speed multiplier, elapsed time, and ETA.
+- **Single-to-Queue & Presets**: Configure custom track layouts in Single mode and push them into the queue, or apply batch-wide container, audio, metadata, FastStart, and subtitle presets.
 
-### Engine Options
-- **Bundled Binaries**: Includes self-contained arm64 FFmpeg and FFprobe binaries.
-- **Homebrew & Custom Paths**: Option to use system FFmpeg from `/opt/homebrew` or a custom path, with an in-app check and updater for Homebrew installations.
+### Flexible Engine Setup
+- **Bundled, Homebrew, or Custom Binaries**: Ships with embedded arm64 FFmpeg and FFprobe binaries, or switches to Homebrew/custom paths with built-in FFmpeg installation and update controls.
 
 ---
 
