@@ -3,10 +3,15 @@
 An Apple Silicon-native media workstation for lossless remuxing, hardware encoding, and track mastering on macOS. Built with Swift, SwiftUI, and AppKit.
 
 ![macOS 14+](https://img.shields.io/badge/macOS-14%2B%20Sonoma%20%2F%20Sequoia-black?style=flat-square&logo=apple)
-![Apple Silicon](https://img.shields.io/badge/Architecture-Apple%20Silicon%20(arm64)-orange?style=flat-square)
+![Apple Silicon](https://img.shields.io/badge/Architecture-Apple%20Silicon%20(arm64)-FF9500?style=flat-square)
+![Hardware Accel](https://img.shields.io/badge/Hardware%20Accel-Apple%20VideoToolbox-0071e3?style=flat-square&logo=apple)
+![UI](https://img.shields.io/badge/UI-SwiftUI%20%26%20AppKit-0A84FF?style=flat-square&logo=swift)
 ![Swift](https://img.shields.io/badge/Swift-5.10%2B%20%2F%20Swift%206-F05138?style=flat-square&logo=swift)
-![FFmpeg](https://img.shields.io/badge/Engine-FFmpeg%20%26%20FFprobe-007808?style=flat-square&logo=ffmpeg)
-![License](https://img.shields.io/badge/License-Source--Available%20%2F%20Freeware-purple?style=flat-square)
+![Engine](https://img.shields.io/badge/Engine-FFmpeg%20%26%20FFprobe-007808?style=flat-square&logo=ffmpeg)
+![Codecs](https://img.shields.io/badge/Codecs-ProRes%20%C2%B7%20AV1%20%C2%B7%20HEVC-5856D6?style=flat-square)
+![Audio](https://img.shields.io/badge/Audio-EBU%20R128%20Loudness-BF5AF2?style=flat-square)
+![Updates](https://img.shields.io/badge/Updates-Sparkle%202%20(EdDSA)-30B0C7?style=flat-square)
+![License](https://img.shields.io/badge/License-Source--Available%20%2F%20Freeware-AF52DE?style=flat-square)
 
 ---
 
