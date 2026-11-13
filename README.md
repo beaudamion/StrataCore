@@ -29,11 +29,11 @@ All media probing, remuxing, and transcoding operations run 100% locally on-devi
 
 ## Supported Formats
 
-Strata handles the primary media containers and codecs supported by FFmpeg:
+Strata supports the primary media containers and codecs natively or via FFmpeg:
 
-- **Containers**: MP4, MKV, MOV, M4V, WebM with per-codec compatibility checks and one-click container switching (input inspection also supports AVI, TS, M2TS, FLV, OGG)
-- **Video Codecs**: Passthrough for H.264, HEVC (with automatic `hev1` → `hvc1` Apple compatibility tagging), Apple ProRes, AV1, VP9, VP8, and others; VideoToolbox hardware encoding for H.264, HEVC (8/10-bit, alpha, 4:2:2), and Apple ProRes (`Automatic`, Proxy through 4444 XQ) with automatic software fallback; plus **AV1** (SVT-AV1, 8/10-bit) and **Uncompressed 4:2:2** (8/10-bit)
-- **Audio Codecs**: Passthrough and extraction for AAC, AC-3, E-AC-3, DTS, TrueHD, FLAC, ALAC, Opus, MP3, and PCM; encoding to **AAC** (True VBR / CBR / ABR / CVBR), **AC3**, **E-AC3 (Dolby Digital+)**, **ALAC**, **FLAC**, **Opus**, **MP3 (LAME)**, **WAV**, and **AIFF** (up to 32-bit PCM / float)
+- **Containers**: MP4, MKV, MOV, M4V, WebM (input inspection also handles AVI, TS, M2TS, FLV, OGG)
+- **Video Formats**: H.264, HEVC / H.265 (8/10-bit, 4:2:2, alpha), Apple ProRes (Proxy through 4444 XQ), AV1 (SVT-AV1), VP9, and Uncompressed 4:2:2 (`v210` / `2vuy`)
+- **Audio Formats**: AAC (stereo / 5.1), AC3, E-AC3 (Dolby Digital+), ALAC, FLAC, Opus, MP3, WAV, AIFF, TrueHD, and DTS
 - **Subtitles**: SRT, ASS/SSA, WebVTT, `mov_text`, PGS, and VobSub
 
 ---
@@ -46,14 +46,14 @@ Strata handles the primary media containers and codecs supported by FFmpeg:
 - **MP4 Web & Metadata Controls**: Relocate the `moov` header (`+faststart`), strip global metadata or chapters, and convert text subtitles to `mov_text` when targeting MP4/M4V.
 
 ### Hardware Acceleration, AV1 & Pro Encoding
-- **VideoToolbox & Native 2-Pass VBR**: Accelerate decoding and H.264, HEVC, and Apple ProRes encoding via macOS VideoToolbox — including native 2-pass hardware VBR for MP4/M4V/MOV and automatic software fallback (`x264`, `x265`, `prores_ks`) when profiles or settings require it.
-- **Segmented Parallel Exports**: Detect physical Apple Silicon Media Engines and active VideoToolbox sessions via IOKit, splitting eligible single-file exports at keyframe boundaries across idle hardware engines while keeping audio sample-accurate.
-- **AV1 & Uncompressed Workflows**: Encode software **AV1** (`libsvtav1` speed presets `2–8`, 8/10-bit, Constant Quality or Average Bitrate) for MP4, M4V, MKV, and WebM, or output broadcast-grade **Uncompressed 4:2:2** (10-bit `v210` / 8-bit `2vuy`) to MOV and MKV.
-- **Automatic Defaults & Full Video Controls**: Options default to **Automatic** to match your source untouched unless customized (with one-click reset). Configure quality presets (`Compact` to `Master`), bitrate limits, frame rate, color space (Rec. 709 / 601 / Rec. 2020 HLG & PQ), aspect-preserving resize (`720p`–`4K`), rotation/flip, deinterlacing, B-frames, keyframe interval, alpha preservation, and Dolby Vision RPU protection warnings.
+- **VideoToolbox & Native 2-Pass VBR**: Hardware-accelerated encoding for H.264, HEVC, and Apple ProRes on Apple Silicon Media Engines — including native 2-pass hardware VBR and automatic CPU fallback (`x264`, `x265`, `prores_ks`) when custom profiles require it.
+- **Segmented Parallel Exports**: Detects physical Apple Silicon Media Engines and active VideoToolbox sessions via IOKit, splitting eligible single-file exports at keyframe boundaries across idle hardware engines while keeping audio sample-accurate.
+- **AV1 & Uncompressed Mastering**: Encode software AV1 (`libsvtav1` speed presets `2–8`, 8/10-bit, Constant Quality or Average Bitrate) for modern streaming, or export broadcast-grade 10-bit Uncompressed 4:2:2 frames to MOV and MKV.
+- **Automatic Defaults & Full Video Controls**: Options default to **Automatic** to preserve source properties untouched unless customized (with one-click reset). Configure quality presets (`Compact` to `Master`), bitrate limits, frame rate, color space (Rec. 709 / 601 / Rec. 2020 HLG & PQ), aspect-preserving resize (`720p`–`4K`), rotation/flip, deinterlacing, B-frames, keyframe interval, alpha preservation, and Dolby Vision RPU protection warnings.
 
 ### Audio Encoding, Loudness & Stem Extraction
-- **Non-Destructive Audio Conversion**: Encode to AAC, AC3, E-AC3 (Dolby Digital+), ALAC, FLAC, Opus, MP3 (LAME), WAV, or AIFF. Channels, sample rates (up to 192 kHz), 24/32-bit lossless depths, and adaptive or source-matched bitrates default to **Automatic**, with full manual control when needed.
-- **2-Pass Loudness Normalization**: Built-in EBU R128 loudness leveling for Streaming (`-14 LUFS`), Apple/Podcast (`-16 LUFS`), and Broadcast (`-23 LUFS`).
+- **Smart Audio Transcoding**: Encode to compressed or lossless audio formats with channels, sample rates (up to 192 kHz), and adaptive or source-matched bitrates defaulting to **Automatic** to mirror the original track untouched unless adjusted.
+- **2-Pass Loudness Normalization**: Built-in EBU R128 loudness leveling with target presets for Streaming (`-14 LUFS`), Apple/Podcast (`-16 LUFS`), and Broadcast (`-23 LUFS`).
 - **Standalone Track Extraction & Pattern Naming**: Export individual video, audio, or subtitle streams directly, or format filenames with tokens (`{filename}`, `{title}`, `{lang}`, `{codec}`, `{index}`, `{channels}`) and live previews.
 
 ### Media Inspector, Quality Check & Native macOS UI
