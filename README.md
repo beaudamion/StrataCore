@@ -17,23 +17,23 @@ An Apple Silicon-native media workstation for lossless remuxing, hardware encodi
 
 ## Overview
 
-**StrataCore** is the core media processing engine powering **Strata**, an Apple Silicon-native media workstation for lossless remuxing, hardware encoding, and track mastering on macOS.
+**StrataCore** is the media processing engine powering **Strata**, a native macOS media workstation for lossless remuxing, hardware encoding, and track mastering on Apple Silicon.
 
 This public repository serves two purposes:
-1. **Engine Source**: Hosts the core Swift media processing engine (`RemuxEngine`, `ExecutionPlanner`, `NativeVideoToolboxEngine`, `PerceptualQCRunner`, `ProbePipeline`, `HardwareCapabilities`, `FFmpegLocator`, `BatchEngine`, and stream models) for inspection, auditing, and building.
-2. **Release Distribution**: Provides pre-compiled application releases of **Strata.app** for macOS Apple Silicon under [Releases](https://github.com/beaudamion/StrataCore/releases).
+1. **Engine Source**: Hosts the Swift media engine source code for inspection, security auditing, and building.
+2. **Release Distribution**: Official compiled downloads of **Strata.app** for macOS under [Releases](https://github.com/beaudamion/StrataCore/releases).
 
-All media probing, remuxing, and transcoding operations run 100% locally on-device. The engine contains no network code, telemetry, or remote dependencies.
+All processing runs 100% on-device with zero telemetry and no remote dependencies.
 
 ---
 
 ## Supported Formats
 
-Strata supports the primary media containers and codecs natively or via FFmpeg:
+Strata handles the most popular media formats and pro codecs:
 
-- **Containers**: MP4, MKV, MOV, M4V, WebM (input inspection also handles AVI, TS, M2TS, FLV, OGG)
-- **Video Formats**: H.264, HEVC / H.265 (8/10-bit, 4:2:2, alpha), Apple ProRes (Proxy through 4444 XQ), AV1 (SVT-AV1), VP9, and Uncompressed 4:2:2 (`v210` / `2vuy`)
-- **Audio Formats**: AAC (stereo / 5.1), AC3, E-AC3 (Dolby Digital+), ALAC, FLAC, Opus, MP3, WAV, AIFF, TrueHD, and DTS
+- **Containers**: MP4, MKV, MOV, M4V, WebM (inspection also supports AVI, TS, M2TS, FLV, OGG)
+- **Video**: H.264, HEVC / H.265 (8/10-bit, 4:2:2, alpha), Apple ProRes (Proxy through 4444 XQ), AV1 (SVT-AV1), VP9, and Uncompressed 4:2:2 (`v210` / `2vuy`)
+- **Audio**: AAC (stereo & 5.1), AC3, E-AC3 (Dolby Digital+), ALAC, FLAC, Opus, MP3, WAV, AIFF, TrueHD, and DTS
 - **Subtitles**: SRT, ASS/SSA, WebVTT, `mov_text`, PGS, and VobSub
 
 ---
@@ -41,32 +41,32 @@ Strata supports the primary media containers and codecs natively or via FFmpeg:
 ## Features
 
 ### Lossless Remuxing & Track Control
-- **Direct Stream Copy**: Repackage containers (MP4, MKV, MOV, M4V, WebM) without re-encoding video streams (`-c copy`), using dynamic `.remuxed` and `.encoded` output suffixes.
-- **Multi-Track Multiplexing**: Reorder tracks via drag-and-drop, disable unwanted streams, and import external audio, subtitle, or secondary video tracks with instant compatibility banners and one-click container switching.
-- **MP4 Web & Metadata Controls**: Relocate the `moov` header (`+faststart`), strip global metadata or chapters, and convert text subtitles to `mov_text` when targeting MP4/M4V.
+- **Instant Stream Copy**: Change containers (e.g. MKV to MP4) in seconds without re-compressing video or losing visual quality.
+- **Track Management**: Drag and drop to reorder tracks, turn off unneeded audio or subtitles, or add external audio and subtitle files.
+- **Web & Apple Device Optimization**: Turn on Web FastStart for instant browser playback, strip unnecessary metadata, and format subtitles for Apple devices.
 
-### Hardware Acceleration, AV1 & Pro Encoding
-- **VideoToolbox & Native 2-Pass VBR**: Hardware-accelerated encoding for H.264, HEVC, and Apple ProRes on Apple Silicon Media Engines — including native 2-pass hardware VBR and automatic CPU fallback (`x264`, `x265`, `prores_ks`) when custom profiles require it.
-- **Segmented Parallel Exports**: Detects physical Apple Silicon Media Engines and active VideoToolbox sessions via IOKit, splitting eligible single-file exports at keyframe boundaries across idle hardware engines while keeping audio sample-accurate.
-- **AV1 & Uncompressed Mastering**: Encode software AV1 (`libsvtav1` speed presets `2–8`, 8/10-bit, Constant Quality or Average Bitrate) for modern streaming, or export broadcast-grade 10-bit Uncompressed 4:2:2 frames to MOV and MKV.
-- **Automatic Defaults & Full Video Controls**: Options default to **Automatic** to preserve source properties untouched unless customized (with one-click reset). Configure quality presets (`Compact` to `Master`), bitrate limits, frame rate, color space (Rec. 709 / 601 / Rec. 2020 HLG & PQ), aspect-preserving resize (`720p`–`4K`), rotation/flip, deinterlacing, B-frames, keyframe interval, alpha preservation, and Dolby Vision RPU protection warnings.
+### Apple Silicon Hardware Encoding & Pro Video
+- **Hardware Acceleration**: Take full advantage of Apple Silicon Media Engines for fast H.264, HEVC, and ProRes encoding, with native 2-pass quality controls and automatic CPU fallback when needed.
+- **Multi-Engine Parallel Exports**: Automatically splits and processes exports across multiple hardware encoding engines on Apple Silicon Pro, Max, and Ultra chips.
+- **Modern AV1 & Archival Video**: High-efficiency software AV1 encoding (8/10-bit) for streaming, plus broadcast-grade 10-bit Uncompressed 4:2:2 output for archival workflows.
+- **Automatic Defaults with Full Control**: All settings default to **Automatic** to preserve your original file untouched unless you choose to customize. When you want to make adjustments, you have full control over quality presets, frame rates, color spaces (Rec. 709, Rec. 2020, HDR10, HLG), resolution scaling, rotation, and deinterlacing.
 
-### Audio Encoding, Loudness & Stem Extraction
-- **Smart Audio Transcoding**: Encode to compressed or lossless audio formats with channels, sample rates (up to 192 kHz), and adaptive or source-matched bitrates defaulting to **Automatic** to mirror the original track untouched unless adjusted.
-- **2-Pass Loudness Normalization**: Built-in EBU R128 loudness leveling with target presets for Streaming (`-14 LUFS`), Apple/Podcast (`-16 LUFS`), and Broadcast (`-23 LUFS`).
-- **Standalone Track Extraction & Pattern Naming**: Export individual video, audio, or subtitle streams directly, or format filenames with tokens (`{filename}`, `{title}`, `{lang}`, `{codec}`, `{index}`, `{channels}`) and live previews.
+### Audio Transcoding & Loudness Mastering
+- **Smart Audio Conversion**: Transcode audio tracks to AAC, AC3, Dolby Digital+, ALAC, FLAC, Opus, MP3, WAV, or AIFF. Bitrates, channels, and sample rates (up to 192 kHz) default to **Automatic** to mirror your original sound.
+- **EBU R128 Loudness Normalization**: Level your audio with industry-standard targets for Streaming (`-14 LUFS`), Apple / Podcast (`-16 LUFS`), and Broadcast (`-23 LUFS`).
+- **Individual Track Extraction**: Quickly export isolated video, dialogue, music stems, or subtitle tracks directly to their own standalone files.
 
-### Media Inspector, Quality Check & Native macOS UI
-- **Stream Telemetry Inspector**: View container, chapter, bitrate, color, HDR10/HLG, mastering display, and Dolby Vision metadata for loaded files with one-click spec copying.
-- **Post-Export Quality Check**: Optionally score finished video exports against the original file using **XPSNR** or **VMAF**.
-- **Liquid Glass Interface & Plain-English Mode**: Built with macOS vibrancy, Liquid Glass refraction controls, toggleable hover tooltips, and approachable **Plain-English** descriptions by default (with a **Technical Engine & CLI Details** toggle in Settings → Appearance).
+### Media Inspector & Native macOS Design
+- **Detailed File Inspector**: Inspect codecs, bitrates, color profiles, HDR10/HLG metadata, mastering display info, and Dolby Vision layers in one click.
+- **Visual Quality Verification**: Optionally compare exported files against the original with industry-standard **XPSNR** or **VMAF** quality scoring.
+- **Native Frosted Glass UI**: Designed specifically for macOS Sonoma and Sequoia with native dark vibrancy, Liquid Glass accents, and clear Plain-English descriptions (with an optional Technical Details mode for power users).
 
-### Batch Queue & Automation
-- **Queue Processing**: Convert or remux multiple files sequentially with live per-item progress, speed multiplier, elapsed time, and ETA.
-- **Single-to-Queue & Presets**: Configure custom track layouts in Single mode and push them into the queue, or apply batch-wide container, audio, metadata, FastStart, and subtitle presets.
+### Batch Processing & Automation
+- **Queue Processing**: Convert, remux, or extract multiple media files in sequence with live speed, progress, and time estimates.
+- **Batch Presets**: Apply container, audio, and metadata settings across dozens of files at once.
 
-### Flexible Engine Setup
-- **Bundled, Homebrew, or Custom Binaries**: Ships with self-contained arm64 FFmpeg and FFprobe binaries for macOS 14+ (verified automatically on launch), or switches to Homebrew/custom paths with built-in FFmpeg installation and update controls.
+### Zero-Setup Portability
+- **Self-Contained**: Ships with embedded media engines ready to go—no terminal commands, Homebrew, or external tools required. Power users can also link custom FFmpeg installations in Settings.
 
 ---
 
