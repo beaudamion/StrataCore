@@ -20,7 +20,7 @@ An Apple Silicon-native media workstation for lossless remuxing, hardware encodi
 **StrataCore** is the media processing engine powering **Strata**, a native macOS media workstation for lossless remuxing, hardware encoding, and track mastering on Apple Silicon.
 
 This public repository serves two purposes:
-1. **Engine Source**: Hosts the Swift media engine source code for inspection, security auditing, and building.
+1. **Engine Source**: Hosts the Swift media engine source code for transparency, privacy verification, and security auditing.
 2. **Release Distribution**: Official compiled downloads of **Strata.app** for macOS under [Releases](https://github.com/beaudamion/StrataCore/releases).
 
 All processing runs 100% on-device with zero telemetry and no remote dependencies.
@@ -33,7 +33,7 @@ Strata handles the most popular media formats and pro codecs:
 
 - **Containers**: MP4, MKV, MOV, M4V, WebM (inspection also supports AVI, TS, M2TS, FLV, OGG)
 - **Video**: H.264, HEVC / H.265 (8/10-bit, 4:2:2, alpha), Apple ProRes (Proxy through 4444 XQ), AV1 (SVT-AV1), VP9, and Uncompressed 4:2:2 (`v210` / `2vuy`)
-- **Audio**: AAC (stereo & 5.1), AC3, E-AC3 (Dolby Digital+), ALAC, FLAC, Opus, MP3, WAV, AIFF, TrueHD, and DTS
+- **Audio**: AAC, AC3, E-AC3 (Dolby Digital+), ALAC, FLAC, Opus, MP3, WAV, AIFF, TrueHD, and DTS
 - **Subtitles**: SRT, ASS/SSA, WebVTT, `mov_text`, PGS, and VobSub
 
 ---
@@ -42,12 +42,12 @@ Strata handles the most popular media formats and pro codecs:
 
 ### Lossless Remuxing & Track Control
 - **Instant Stream Copy**: Change containers (e.g. MKV to MP4) in seconds without re-compressing video or losing visual quality.
-- **Track Management**: Drag and drop to reorder tracks, turn off unneeded audio or subtitles, or add external audio and subtitle files.
+- **Track Management**: Drag and drop to reorder tracks, turn off unneeded streams, or add external video, audio, and subtitle files.
 - **Web & Apple Device Optimization**: Turn on Web FastStart for instant browser playback, strip unnecessary metadata, and format subtitles for Apple devices.
 
 ### Apple Silicon Hardware Encoding & Pro Video
 - **Hardware Acceleration**: Take full advantage of Apple Silicon Media Engines for fast H.264, HEVC, and ProRes encoding, with native 2-pass quality controls and automatic CPU fallback when needed.
-- **Multi-Engine Parallel Exports**: Automatically splits and processes exports across multiple hardware encoding engines on Apple Silicon Pro, Max, and Ultra chips.
+- **Multi-Engine Parallel Exports**: Automatically splits and processes exports across multiple hardware encoding engines on Apple Silicon Pro, Max, and Ultra chips for faster export performance while audio stays perfectly sample-accurate.
 - **Modern AV1 & Archival Video**: High-efficiency software AV1 encoding (8/10-bit) for streaming, plus broadcast-grade 10-bit Uncompressed 4:2:2 output for archival workflows.
 - **Automatic Defaults with Full Control**: All settings default to **Automatic** to preserve your original file untouched unless you choose to customize. When you want to make adjustments, you have full control over quality presets, frame rates, color spaces (Rec. 709, Rec. 2020, HDR10, HLG), resolution scaling, rotation, and deinterlacing.
 
@@ -59,7 +59,7 @@ Strata handles the most popular media formats and pro codecs:
 ### Media Inspector & Native macOS Design
 - **Detailed File Inspector**: Inspect codecs, bitrates, color profiles, HDR10/HLG metadata, mastering display info, and Dolby Vision layers in one click.
 - **Visual Quality Verification**: Optionally compare exported files against the original with industry-standard **XPSNR** or **VMAF** quality scoring.
-- **Native Frosted Glass UI**: Designed specifically for macOS Sonoma and Sequoia with native dark vibrancy, Liquid Glass accents, and clear Plain-English descriptions (with an optional Technical Details mode for power users).
+- **Native Frosted Glass UI**: Designed for modern macOS (Sonoma+) with native dark vibrancy, Liquid Glass accents, and clear Plain-English descriptions (with an optional Technical Details mode for power users).
 
 ### Batch Processing & Automation
 - **Queue Processing**: Convert, remux, or extract multiple media files in sequence with live speed, progress, and time estimates.
