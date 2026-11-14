@@ -530,7 +530,7 @@ public actor RemuxEngine {
                     filterParts.append(rotCPU)
                 }
                 if let targetW = cfg.resizeOption.targetWidth {
-                    filterParts.append("scale=\(targetW):-2:flags=lanczos")
+                    filterParts.append("scale=\(targetW):-2:flags=bicubic")
                 }
                 
                 if !isBaseline {
@@ -609,7 +609,7 @@ public actor RemuxEngine {
                         filterParts.append(rotCPU)
                     }
                     if let targetW = cfg.resizeOption.targetWidth {
-                        filterParts.append("scale=\(targetW):-2:flags=lanczos")
+                        filterParts.append("scale=\(targetW):-2:flags=bicubic")
                     }
                     setparamsParts.append("field_mode=prog")
                     args += ["-field_order\(spec)", "progressive"]
@@ -663,7 +663,7 @@ public actor RemuxEngine {
                     filterParts.append(rotCPU)
                 }
                 if let targetW = cfg.resizeOption.targetWidth {
-                    filterParts.append("scale=\(targetW):-2:flags=lanczos")
+                    filterParts.append("scale=\(targetW):-2:flags=bicubic")
                 }
                 setparamsParts.append("field_mode=prog")
                 args += ["-field_order\(spec)", "progressive"]
@@ -746,7 +746,7 @@ public actor RemuxEngine {
                         filterParts.append(rotCPU)
                     }
                     if let targetW = cfg.resizeOption.targetWidth {
-                        filterParts.append("scale=\(targetW):-2:flags=lanczos")
+                        filterParts.append("scale=\(targetW):-2:flags=bicubic")
                     }
                     setparamsParts.append("field_mode=prog")
                     args += ["-field_order\(spec)", "progressive"]
@@ -790,7 +790,7 @@ public actor RemuxEngine {
                     filterParts.append(rotCPU)
                 }
                 if let targetW = cfg.resizeOption.targetWidth {
-                    filterParts.append("scale=\(targetW):-2:flags=lanczos")
+                    filterParts.append("scale=\(targetW):-2:flags=bicubic")
                 }
                 switch cfg.fieldOrder {
                 case .topFirst:
@@ -848,7 +848,7 @@ public actor RemuxEngine {
                 filterParts.append(rotCPU)
             }
             if let targetW = cfg.resizeOption.targetWidth {
-                filterParts.append("scale=\(targetW):-2:flags=lanczos")
+                filterParts.append("scale=\(targetW):-2:flags=bicubic")
             }
             setparamsParts.append("field_mode=prog")
             args += ["-field_order\(spec)", "progressive"]
@@ -869,7 +869,7 @@ public actor RemuxEngine {
                 filterParts.append(rotCPU)
             }
             if let targetW = cfg.resizeOption.targetWidth {
-                filterParts.append("scale=\(targetW):-2:flags=lanczos")
+                filterParts.append("scale=\(targetW):-2:flags=bicubic")
             }
             switch cfg.fieldOrder {
             case .topFirst:
@@ -1575,37 +1575,46 @@ public actor RemuxEngine {
         
         let fileHandle = stderrPipe.fileHandleForReading
         var lineBuffer = Data()
-        lineBuffer.reserveCapacity(256)
+        lineBuffer.reserveCapacity(512)
+        var lastEmittedTime = ContinuousClock.now - .seconds(1)
         
         do {
-            for try await byteData in fileHandle.bytes {
-                if self.isCancelled { break }
-                
-                if byteData == 0x0A || byteData == 0x0D {
-                    if !lineBuffer.isEmpty {
-                        if let line = String(data: lineBuffer, encoding: .utf8),
-                           let update = MediaFormatters.parseFFmpegProgress(line: line, totalDuration: duration) {
-                            let scaledProgress = min(1.0, max(0.0, progressOffset + (update.progress * progressScale)))
-                            let speedLabel = speedPrefix.map { "\($0) • \(update.speed)" } ?? update.speed
-                            continuation.yield(RemuxProgress(
-                                progress: scaledProgress,
-                                currentTime: update.currentTime,
-                                totalTime: update.totalTime,
-                                fps: update.fps,
-                                speed: speedLabel,
-                                bitrate: update.bitrate,
-                                frame: update.frame,
-                                remainingSeconds: update.remainingSeconds,
-                                activeSegments: activeSegments,
-                                phaseLabel: phaseLabel,
-                                notice: notice,
-                                executionTierLabel: executionTierLabel
-                            ))
+            while !self.isCancelled {
+                guard let chunk = try fileHandle.read(upToCount: 8192), !chunk.isEmpty else {
+                    break
+                }
+                for byteData in chunk {
+                    if byteData == 0x0A || byteData == 0x0D {
+                        if !lineBuffer.isEmpty {
+                            if let line = String(data: lineBuffer, encoding: .utf8),
+                               let update = MediaFormatters.parseFFmpegProgress(line: line, totalDuration: duration) {
+                                let now = ContinuousClock.now
+                                let isFinal = update.progress >= 0.999
+                                if isFinal || (now - lastEmittedTime) >= .milliseconds(50) {
+                                    lastEmittedTime = now
+                                    let scaledProgress = min(1.0, max(0.0, progressOffset + (update.progress * progressScale)))
+                                    let speedLabel = speedPrefix.map { "\($0) • \(update.speed)" } ?? update.speed
+                                    continuation.yield(RemuxProgress(
+                                        progress: scaledProgress,
+                                        currentTime: update.currentTime,
+                                        totalTime: update.totalTime,
+                                        fps: update.fps,
+                                        speed: speedLabel,
+                                        bitrate: update.bitrate,
+                                        frame: update.frame,
+                                        remainingSeconds: update.remainingSeconds,
+                                        activeSegments: activeSegments,
+                                        phaseLabel: phaseLabel,
+                                        notice: notice,
+                                        executionTierLabel: executionTierLabel
+                                    ))
+                                }
+                            }
+                            lineBuffer.removeAll(keepingCapacity: true)
                         }
-                        lineBuffer.removeAll(keepingCapacity: true)
+                    } else {
+                        lineBuffer.append(byteData)
                     }
-                } else {
-                    lineBuffer.append(byteData)
                 }
             }
         } catch {
@@ -1690,9 +1699,11 @@ public actor RemuxEngine {
         
         var errData = Data()
         do {
-            for try await byteData in stderrPipe.fileHandleForReading.bytes {
-                if self.isCancelled { break }
-                errData.append(byteData)
+            while !self.isCancelled {
+                guard let chunk = try stderrPipe.fileHandleForReading.read(upToCount: 16384), !chunk.isEmpty else {
+                    break
+                }
+                errData.append(chunk)
             }
         } catch {
             // Stream read terminated
@@ -1797,21 +1808,31 @@ public actor RemuxEngine {
         
         let fileHandle = stderrPipe.fileHandleForReading
         var lineBuffer = Data()
-        lineBuffer.reserveCapacity(256)
+        lineBuffer.reserveCapacity(512)
+        var lastEmittedTime = ContinuousClock.now - .seconds(1)
         
         do {
-            for try await byteData in fileHandle.bytes {
-                if self.isCancelled { break }
-                if byteData == 0x0A || byteData == 0x0D {
-                    if !lineBuffer.isEmpty {
-                        if let line = String(data: lineBuffer, encoding: .utf8),
-                           let update = MediaFormatters.parseFFmpegProgress(line: line, totalDuration: chunkDuration) {
-                            await onProgress(update)
+            while !self.isCancelled {
+                guard let chunk = try fileHandle.read(upToCount: 8192), !chunk.isEmpty else {
+                    break
+                }
+                for byteData in chunk {
+                    if byteData == 0x0A || byteData == 0x0D {
+                        if !lineBuffer.isEmpty {
+                            if let line = String(data: lineBuffer, encoding: .utf8),
+                               let update = MediaFormatters.parseFFmpegProgress(line: line, totalDuration: chunkDuration) {
+                                let now = ContinuousClock.now
+                                let isFinal = update.progress >= 0.999
+                                if isFinal || (now - lastEmittedTime) >= .milliseconds(50) {
+                                    lastEmittedTime = now
+                                    await onProgress(update)
+                                }
+                            }
+                            lineBuffer.removeAll(keepingCapacity: true)
                         }
-                        lineBuffer.removeAll(keepingCapacity: true)
+                    } else {
+                        lineBuffer.append(byteData)
                     }
-                } else {
-                    lineBuffer.append(byteData)
                 }
             }
         } catch {
