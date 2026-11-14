@@ -835,6 +835,10 @@ public actor RemuxEngine {
                     svtParams.append("mbr=\(maxBr)")
                 }
             }
+            // Visual Quality (tune=0) preserves natural grain and edge micro-contrast instead of PSNR smoothing.
+            // tile-columns=1 enables parallel multi-core decoding across client devices.
+            svtParams.append("tune=0")
+            svtParams.append("tile-columns=1")
             if !svtParams.isEmpty {
                 args += ["-svtav1-params\(spec)", svtParams.joined(separator: ":")]
             }
