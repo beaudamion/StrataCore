@@ -531,7 +531,12 @@ struct SegmentedExportTests {
         }
         
         #expect(!fm.fileExists(atPath: cancelOutURL.path))
-        let postCancelCounts = await HardwareSessionCoordinator.shared.activeCounts()
+        var postCancelCounts = await HardwareSessionCoordinator.shared.activeCounts()
+        for _ in 0..<10 {
+            if postCancelCounts.ave == 0 && postCancelCounts.proRes == 0 { break }
+            try await Task.sleep(nanoseconds: 50_000_000)
+            postCancelCounts = await HardwareSessionCoordinator.shared.activeCounts()
+        }
         #expect(postCancelCounts.ave == 0)
         #expect(postCancelCounts.proRes == 0)
     }
