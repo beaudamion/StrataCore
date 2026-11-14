@@ -542,7 +542,7 @@ struct MediaEngineTests {
     // MARK: - 5. Live End-to-End Hardware VLD, Native 2-Pass VT, HDR10 Probe, Loudnorm, and QC
     
     @Test("Live Zero-Copy VLD Filters, Native 2-Pass VT Encode, Loudnorm, HDR10 Probe, and Perceptual QC")
-    func testLiveMediaEngineUpgradesEndToEnd() async throws {
+    func testLiveMediaEngineEndToEnd() async throws {
         // Check native IOSurface pixel buffer pool sharing first
         let poolShared = NativeVideoToolboxEngine.probeSharedPixelBufferPoolSupport(
             width: 640,
@@ -557,7 +557,7 @@ struct MediaEngineTests {
         }
         
         let fm = FileManager.default
-        let workDir = fm.temporaryDirectory.appendingPathComponent("strata_upgrade_live_\(UUID().uuidString)")
+        let workDir = fm.temporaryDirectory.appendingPathComponent("strata_engine_live_\(UUID().uuidString)")
         try fm.createDirectory(at: workDir, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: workDir) }
         
