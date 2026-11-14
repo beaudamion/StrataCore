@@ -823,7 +823,9 @@ struct StrataCoreTests {
         #expect(av1ABRArgs.contains("-b:v:0"))
         #expect(av1ABRArgs.contains("4500k"))
         #expect(av1ABRArgs.contains("-svtav1-params:v:0"))
-        #expect(av1ABRArgs.contains("rc=1"))
+        #expect(av1ABRArgs.contains { $0.contains("rc=1") })
+        #expect(av1ABRArgs.contains { $0.contains("tune=0") })
+        #expect(av1ABRArgs.contains { $0.contains("tile-columns=1") })
         #expect(!av1ABRArgs.contains { $0.contains("mbr=") })
         
         let unc8Track = MediaTrack(
