@@ -3,8 +3,8 @@ import Foundation
 @preconcurrency import CoreMedia
 @testable import StrataCore
 
-@Suite("macOS Media Engine 7-Layer Upgrade Tests")
-struct MediaEngineUpgradeTests {
+@Suite("StrataCore Media Engine Tests")
+struct MediaEngineTests {
     
     // MARK: - Helpers
     
