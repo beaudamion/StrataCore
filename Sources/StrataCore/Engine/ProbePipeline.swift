@@ -237,6 +237,16 @@ public final class ProbePipeline {
         } catch {
             process.terminationHandler = nil
             terminationContinuation.finish()
+            let snapshot = FailedJobSnapshot(
+                operation: "Probe File",
+                executableName: "ffprobe",
+                arguments: arguments,
+                exitCode: -1,
+                stderrTail: ["Failed to launch ffprobe: \(error.localizedDescription)"]
+            )
+            Task {
+                await DiagnosticSink.shared.recordFailedJob(snapshot)
+            }
             throw ProbeError.executionFailed(error.localizedDescription)
         }
         
@@ -253,6 +263,17 @@ public final class ProbePipeline {
         
         if finalStatus != 0 || finalReason == .uncaughtSignal {
             let rawStderr = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let errLines = rawStderr.components(separatedBy: .newlines).filter { !$0.isEmpty }
+            let snapshot = FailedJobSnapshot(
+                operation: "Probe File",
+                executableName: "ffprobe",
+                arguments: arguments,
+                exitCode: finalStatus,
+                stderrTail: errLines
+            )
+            Task {
+                await DiagnosticSink.shared.recordFailedJob(snapshot)
+            }
             throw Self.classifyFailure(
                 rawStderr: rawStderr,
                 terminationStatus: finalStatus,

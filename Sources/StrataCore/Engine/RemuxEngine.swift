@@ -1578,6 +1578,7 @@ public actor RemuxEngine {
         }
         
         let fileHandle = stderrPipe.fileHandleForReading
+        let ringBuffer = StderrRingBuffer()
         var lineBuffer = Data()
         lineBuffer.reserveCapacity(512)
         var lastEmittedTime = ContinuousClock.now - .seconds(1)
@@ -1590,28 +1591,30 @@ public actor RemuxEngine {
                 for byteData in chunk {
                     if byteData == 0x0A || byteData == 0x0D {
                         if !lineBuffer.isEmpty {
-                            if let line = String(data: lineBuffer, encoding: .utf8),
-                               let update = MediaFormatters.parseFFmpegProgress(line: line, totalDuration: duration) {
-                                let now = ContinuousClock.now
-                                let isFinal = update.progress >= 0.999
-                                if isFinal || (now - lastEmittedTime) >= .milliseconds(50) {
-                                    lastEmittedTime = now
-                                    let scaledProgress = min(1.0, max(0.0, progressOffset + (update.progress * progressScale)))
-                                    let speedLabel = speedPrefix.map { "\($0) • \(update.speed)" } ?? update.speed
-                                    continuation.yield(RemuxProgress(
-                                        progress: scaledProgress,
-                                        currentTime: update.currentTime,
-                                        totalTime: update.totalTime,
-                                        fps: update.fps,
-                                        speed: speedLabel,
-                                        bitrate: update.bitrate,
-                                        frame: update.frame,
-                                        remainingSeconds: update.remainingSeconds,
-                                        activeSegments: activeSegments,
-                                        phaseLabel: phaseLabel,
-                                        notice: notice,
-                                        executionTierLabel: executionTierLabel
-                                    ))
+                            if let line = String(data: lineBuffer, encoding: .utf8) {
+                                ringBuffer.append(line: line)
+                                if let update = MediaFormatters.parseFFmpegProgress(line: line, totalDuration: duration) {
+                                    let now = ContinuousClock.now
+                                    let isFinal = update.progress >= 0.999
+                                    if isFinal || (now - lastEmittedTime) >= .milliseconds(50) {
+                                        lastEmittedTime = now
+                                        let scaledProgress = min(1.0, max(0.0, progressOffset + (update.progress * progressScale)))
+                                        let speedLabel = speedPrefix.map { "\($0) • \(update.speed)" } ?? update.speed
+                                        continuation.yield(RemuxProgress(
+                                            progress: scaledProgress,
+                                            currentTime: update.currentTime,
+                                            totalTime: update.totalTime,
+                                            fps: update.fps,
+                                            speed: speedLabel,
+                                            bitrate: update.bitrate,
+                                            frame: update.frame,
+                                            remainingSeconds: update.remainingSeconds,
+                                            activeSegments: activeSegments,
+                                            phaseLabel: phaseLabel,
+                                            notice: notice,
+                                            executionTierLabel: executionTierLabel
+                                        ))
+                                    }
                                 }
                             }
                             lineBuffer.removeAll(keepingCapacity: true)
@@ -1627,24 +1630,26 @@ public actor RemuxEngine {
         
         // Flush any trailing line buffered before EOF
         if !self.isCancelled && !lineBuffer.isEmpty {
-            if let line = String(data: lineBuffer, encoding: .utf8),
-               let update = MediaFormatters.parseFFmpegProgress(line: line, totalDuration: duration) {
-                let scaledProgress = min(1.0, max(0.0, progressOffset + (update.progress * progressScale)))
-                let speedLabel = speedPrefix.map { "\($0) • \(update.speed)" } ?? update.speed
-                continuation.yield(RemuxProgress(
-                    progress: scaledProgress,
-                    currentTime: update.currentTime,
-                    totalTime: update.totalTime,
-                    fps: update.fps,
-                    speed: speedLabel,
-                    bitrate: update.bitrate,
-                    frame: update.frame,
-                    remainingSeconds: update.remainingSeconds,
-                    activeSegments: activeSegments,
-                    phaseLabel: phaseLabel,
-                    notice: notice,
-                    executionTierLabel: executionTierLabel
-                ))
+            if let line = String(data: lineBuffer, encoding: .utf8) {
+                ringBuffer.append(line: line)
+                if let update = MediaFormatters.parseFFmpegProgress(line: line, totalDuration: duration) {
+                    let scaledProgress = min(1.0, max(0.0, progressOffset + (update.progress * progressScale)))
+                    let speedLabel = speedPrefix.map { "\($0) • \(update.speed)" } ?? update.speed
+                    continuation.yield(RemuxProgress(
+                        progress: scaledProgress,
+                        currentTime: update.currentTime,
+                        totalTime: update.totalTime,
+                        fps: update.fps,
+                        speed: speedLabel,
+                        bitrate: update.bitrate,
+                        frame: update.frame,
+                        remainingSeconds: update.remainingSeconds,
+                        activeSegments: activeSegments,
+                        phaseLabel: phaseLabel,
+                        notice: notice,
+                        executionTierLabel: executionTierLabel
+                    ))
+                }
             }
         }
         
@@ -1656,6 +1661,19 @@ public actor RemuxEngine {
         process.terminationHandler = nil
         let finalStatus = exitStatus ?? (process.isRunning ? -1 : process.terminationStatus)
         unregisterProcess(id: processID)
+        
+        if finalStatus != 0 && !self.isCancelled {
+            let snapshot = FailedJobSnapshot(
+                operation: phaseLabel ?? "FFmpeg Process",
+                executableName: "ffmpeg",
+                arguments: arguments,
+                exitCode: finalStatus,
+                stderrTail: ringBuffer.snapshotLines()
+            )
+            Task {
+                await DiagnosticSink.shared.recordFailedJob(snapshot)
+            }
+        }
         return finalStatus
     }
     
@@ -1811,6 +1829,7 @@ public actor RemuxEngine {
         }
         
         let fileHandle = stderrPipe.fileHandleForReading
+        let ringBuffer = StderrRingBuffer()
         var lineBuffer = Data()
         lineBuffer.reserveCapacity(512)
         var lastEmittedTime = ContinuousClock.now - .seconds(1)
@@ -1823,13 +1842,15 @@ public actor RemuxEngine {
                 for byteData in chunk {
                     if byteData == 0x0A || byteData == 0x0D {
                         if !lineBuffer.isEmpty {
-                            if let line = String(data: lineBuffer, encoding: .utf8),
-                               let update = MediaFormatters.parseFFmpegProgress(line: line, totalDuration: chunkDuration) {
-                                let now = ContinuousClock.now
-                                let isFinal = update.progress >= 0.999
-                                if isFinal || (now - lastEmittedTime) >= .milliseconds(50) {
-                                    lastEmittedTime = now
-                                    await onProgress(update)
+                            if let line = String(data: lineBuffer, encoding: .utf8) {
+                                ringBuffer.append(line: line)
+                                if let update = MediaFormatters.parseFFmpegProgress(line: line, totalDuration: chunkDuration) {
+                                    let now = ContinuousClock.now
+                                    let isFinal = update.progress >= 0.999
+                                    if isFinal || (now - lastEmittedTime) >= .milliseconds(50) {
+                                        lastEmittedTime = now
+                                        await onProgress(update)
+                                    }
                                 }
                             }
                             lineBuffer.removeAll(keepingCapacity: true)
@@ -1844,9 +1865,11 @@ public actor RemuxEngine {
         }
         
         if !self.isCancelled && !lineBuffer.isEmpty {
-            if let line = String(data: lineBuffer, encoding: .utf8),
-               let update = MediaFormatters.parseFFmpegProgress(line: line, totalDuration: chunkDuration) {
-                await onProgress(update)
+            if let line = String(data: lineBuffer, encoding: .utf8) {
+                ringBuffer.append(line: line)
+                if let update = MediaFormatters.parseFFmpegProgress(line: line, totalDuration: chunkDuration) {
+                    await onProgress(update)
+                }
             }
         }
         
@@ -1858,6 +1881,19 @@ public actor RemuxEngine {
         process.terminationHandler = nil
         let finalStatus = exitStatus ?? (process.isRunning ? -1 : process.terminationStatus)
         unregisterProcess(id: processID)
+        
+        if finalStatus != 0 && !self.isCancelled {
+            let snapshot = FailedJobSnapshot(
+                operation: "Chunk Transcode",
+                executableName: "ffmpeg",
+                arguments: arguments,
+                exitCode: finalStatus,
+                stderrTail: ringBuffer.snapshotLines()
+            )
+            Task {
+                await DiagnosticSink.shared.recordFailedJob(snapshot)
+            }
+        }
         return finalStatus
     }
     
@@ -1930,6 +1966,7 @@ public actor RemuxEngine {
                             loudnessMeasurements[audioTrack.id] = measurement
                         }
                     }
+                    
                     if self.isCancelled {
                         continuation.finish()
                         return
@@ -1984,6 +2021,21 @@ public actor RemuxEngine {
                         }
                         continuation.finish()
                         return
+                    }
+                    
+                    if !nativeResult.succeeded && !self.isCancelled {
+                        let failureMsg = nativeResult.errorMessage ?? "Native VideoToolbox Two-Pass Encode failed"
+                        Task {
+                            await DiagnosticSink.shared.emit(DiagnosticEvent(
+                                category: .videoToolbox,
+                                level: .warning,
+                                message: "Native VideoToolbox two-pass failed (\(failureMsg)). Falling back to secondary pipeline.",
+                                metadata: [
+                                    "targetBitrate": "\(targetBps)",
+                                    "codec": videoTrack.codecName
+                                ]
+                            ))
+                        }
                     }
                     
                     if self.isCancelled {
