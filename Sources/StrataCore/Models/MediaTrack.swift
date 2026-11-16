@@ -1443,6 +1443,8 @@ public struct MediaTrack: Identifiable, Hashable, Codable, Sendable {
             case "vorbis": return "ogg"
             case "wav": return "wav"
             case "aiff": return "aiff"
+            case let name where name.hasPrefix("pcm_"):
+                return name.hasSuffix("be") ? "aiff" : "wav"
             
             // Subtitle formats
             case "subrip", "srt": return "srt"

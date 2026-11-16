@@ -54,6 +54,7 @@ public enum NamingPatternHelper {
             case .transcodeEAC3_51: codec = "eac3"
             case .transcodeWAV: codec = "wav"
             case .transcodeAIFF: codec = "aiff"
+            case .transcodeVorbis: codec = "vorbis"
             case .transcodeSRT: codec = "srt"
             case .transcodeMovText: codec = "mov_text"
             default: codec = track.codecName
