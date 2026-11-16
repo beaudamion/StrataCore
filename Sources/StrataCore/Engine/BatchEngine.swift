@@ -99,6 +99,9 @@ public final class BatchEngine: ObservableObject {
                         if let idx = self.items.firstIndex(where: { $0.id == itemId }) {
                             self.items[idx].mediaFile = media
                             self.items[idx].status = .ready
+                            if !media.hasVideoTrack {
+                                self.items[idx].targetContainer = media.suggestedContainer
+                            }
                             self.configurePresets(for: idx)
                         }
                     }

@@ -66,6 +66,7 @@ public enum TrackAction: String, Codable, CaseIterable, Identifiable, Sendable {
     case transcodeFLAC = "transcode_flac"
     case transcodeWAV = "transcode_wav"
     case transcodeAIFF = "transcode_aiff"
+    case transcodeVorbis = "transcode_vorbis"
     
     // Subtitle Conversion
     case transcodeSRT = "transcode_srt"
@@ -119,6 +120,8 @@ public enum TrackAction: String, Codable, CaseIterable, Identifiable, Sendable {
             return "WAV (Uncompressed PCM)"
         case .transcodeAIFF:
             return "AIFF (Apple Uncompressed)"
+        case .transcodeVorbis:
+            return "Ogg Vorbis"
         case .transcodeSRT:
             return "SubRip (.srt)"
         case .transcodeMovText:
@@ -145,6 +148,7 @@ public enum TrackAction: String, Codable, CaseIterable, Identifiable, Sendable {
         .transcodeFLAC,
         .transcodeMP3,
         .transcodeOpus,
+        .transcodeVorbis,
         .transcodeWAV
     ]
     
@@ -173,7 +177,7 @@ public enum TrackAction: String, Codable, CaseIterable, Identifiable, Sendable {
         switch self {
         case .transcodeAAC, .transcodeMP3, .transcodeALAC,
              .transcodeAC3_51, .transcodeEAC3_51, .transcodeOpus, .transcodeFLAC,
-             .transcodeWAV, .transcodeAIFF:
+             .transcodeWAV, .transcodeAIFF, .transcodeVorbis:
             return true
         default:
             return false
@@ -992,6 +996,8 @@ public struct AudioEncodingConfig: Hashable, Codable, Sendable {
             return AudioEncodingConfig(bitrate: "Uncompressed", channels: nil, bitDepth: nil)
         case .transcodeAIFF:
             return AudioEncodingConfig(bitrate: "Uncompressed", channels: nil, bitDepth: nil)
+        case .transcodeVorbis:
+            return AudioEncodingConfig(bitrate: "auto", channels: nil)
         default:
             return AudioEncodingConfig()
         }
@@ -1434,6 +1440,7 @@ public struct MediaTrack: Identifiable, Hashable, Codable, Sendable {
             case "eac3": return "eac3"
             case "flac": return "flac"
             case "opus": return "opus"
+            case "vorbis": return "ogg"
             case "wav": return "wav"
             case "aiff": return "aiff"
             
@@ -1468,6 +1475,7 @@ public struct MediaTrack: Identifiable, Hashable, Codable, Sendable {
             case .transcodeEAC3_51: return "eac3"
             case .transcodeWAV: return "wav"
             case .transcodeAIFF: return "aiff"
+            case .transcodeVorbis: return "ogg"
             
             // Subtitle Conversion
             case .transcodeSRT: return "srt"

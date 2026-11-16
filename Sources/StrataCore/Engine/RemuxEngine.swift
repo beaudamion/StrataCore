@@ -94,7 +94,17 @@ public actor RemuxEngine {
         }
         
         let isPass1 = (pass == 1)
-        let activeTracks = isPass1 ? selectedTracks.filter { $0.mediaType == .video } : selectedTracks
+        let activeTracks: [MediaTrack]
+        if isPass1 {
+            activeTracks = selectedTracks.filter { $0.mediaType == .video }
+        } else if options.targetContainer.isAudioContainer && options.targetContainer != .mkv {
+            activeTracks = selectedTracks.filter { $0.mediaType == .audio }
+        } else {
+            activeTracks = selectedTracks
+        }
+        guard !activeTracks.isEmpty else {
+            throw RemuxError.noTracksSelected
+        }
         
         var args: [String] = ["-y", "-hide_banner"]
         
@@ -154,7 +164,7 @@ public actor RemuxEngine {
         var subtitleOutIdx = 0
         var totalOutIdx = 0
         
-        let isMP4Like = (options.targetContainer == .mp4 || options.targetContainer == .m4v || options.targetContainer == .mov)
+        let isMP4Like = (options.targetContainer == .mp4 || options.targetContainer == .m4v || options.targetContainer == .mov || options.targetContainer == .m4a)
         
         for track in activeTracks {
             switch track.mediaType {
@@ -1058,6 +1068,18 @@ public actor RemuxEngine {
             if targetCh == 1 { return "96k" }
             return "128k"
 
+        case .transcodeVorbis:
+            let table = [64, 96, 128, 160, 192, 256, 320, 500]
+            if let kbps = sourceLossyKbps {
+                let minFloor = targetCh >= 3 ? 192 : (targetCh == 1 ? 64 : 96)
+                let snapped = snappedAudioBitrateKbps(kbps, table: table)
+                return "\(max(minFloor, snapped))k"
+            }
+            if targetCh >= 6 { return "384k" }
+            if targetCh >= 3 { return "256k" }
+            if targetCh == 1 { return "96k" }
+            return "160k"
+
         default:
             return "192k"
         }
@@ -1118,6 +1140,13 @@ public actor RemuxEngine {
             args += ["-c\(spec)", "eac3", "-b\(spec)", resolvedBitrate]
         case .transcodeOpus:
             args += ["-c\(spec)", "libopus", "-b\(spec)", resolvedBitrate]
+        case .transcodeVorbis:
+            args += ["-c\(spec)", "libvorbis"]
+            if track.audioConfig.isVBR {
+                args += ["-q\(spec)", "4"]
+            } else {
+                args += ["-b\(spec)", resolvedBitrate]
+            }
         case .transcodeFLAC:
             args += ["-c\(spec)", "flac"]
             if track.audioConfig.bitDepth == "24" {
@@ -1339,7 +1368,7 @@ public actor RemuxEngine {
         
         args += ["-map", "0:\(videoTrack.streamIndex)", "-an", "-sn", "-dn"]
         
-        let isMP4Like = (options.targetContainer == .mp4 || options.targetContainer == .m4v || options.targetContainer == .mov)
+        let isMP4Like = (options.targetContainer == .mp4 || options.targetContainer == .m4v || options.targetContainer == .mov || options.targetContainer == .m4a)
         args += videoEncoderArguments(
             for: videoTrack,
             streamSpecifier: ":v:0",
@@ -1383,7 +1412,7 @@ public actor RemuxEngine {
             }
         }
         
-        let isMP4Like = (options.targetContainer == .mp4 || options.targetContainer == .m4v || options.targetContainer == .mov)
+        let isMP4Like = (options.targetContainer == .mp4 || options.targetContainer == .m4v || options.targetContainer == .mov || options.targetContainer == .m4a)
         var audioOutIdx = 0
         var subtitleOutIdx = 0
         
@@ -1478,7 +1507,7 @@ public actor RemuxEngine {
         
         args += ["-c", "copy", "-avoid_negative_ts", "make_zero"]
         
-        let isMP4Like = (options.targetContainer == .mp4 || options.targetContainer == .m4v || options.targetContainer == .mov)
+        let isMP4Like = (options.targetContainer == .mp4 || options.targetContainer == .m4v || options.targetContainer == .mov || options.targetContainer == .m4a)
         if let videoTrack = selectedTracks.first(where: { $0.mediaType == .video }) {
             let isH264OrHEVC = videoTrack.action == .transcodeH264_VT
                 || videoTrack.action == .transcodeHEVC_VT

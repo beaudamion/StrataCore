@@ -59,6 +59,18 @@ public struct MediaFile: Identifiable, Hashable, Codable, Sendable {
         tracks.filter { $0.isSelected }
     }
     
+    public var hasVideoTrack: Bool {
+        !videoTracks.isEmpty
+    }
+    
+    public var hasAudioTrack: Bool {
+        !audioTracks.isEmpty
+    }
+    
+    public var isAudioOnly: Bool {
+        !hasVideoTrack && hasAudioTrack
+    }
+    
     // Quick summary
     public var summaryDescription: String {
         let vCount = videoTracks.count
@@ -102,9 +114,27 @@ public struct MediaFile: Identifiable, Hashable, Codable, Sendable {
         }
     }
     
-    // Suggested output container based on extension
+    // Suggested output container based on extension and track contents
     public var suggestedContainer: ContainerFormat {
         let ext = url.pathExtension.lowercased()
+        let hasVideo = tracks.contains { $0.mediaType == .video }
+        
+        if !hasVideo {
+            switch ext {
+            case "wav": return .wav
+            case "aiff", "aif": return .aiff
+            case "flac": return .flac
+            case "mp3": return .mp3
+            case "m4a", "alac", "aac": return .m4a
+            case "opus": return .opus
+            case "ogg", "oga": return .ogg
+            case "caf": return .caf
+            case "mkv", "mka": return .mkv
+            default:
+                return .m4a
+            }
+        }
+        
         switch ext {
         case "mkv": return .mkv
         case "m4v": return .m4v
@@ -120,9 +150,15 @@ public struct MediaFile: Identifiable, Hashable, Codable, Sendable {
         if !ext.isEmpty && ext.count <= 5 { return ext }
         let lower = containerFormat.lowercased()
         if lower.contains("matroska") { return "MKV" }
-        if lower.contains("mp4") { return "MP4" }
+        if lower.contains("mp4") || lower.contains("m4a") { return ext == "M4A" ? "M4A" : "MP4" }
         if lower.contains("mov") { return "MOV" }
         if lower.contains("webm") { return "WEBM" }
+        if lower.contains("wav") { return "WAV" }
+        if lower.contains("flac") { return "FLAC" }
+        if lower.contains("aiff") { return "AIFF" }
+        if lower.contains("mp3") { return "MP3" }
+        if lower.contains("ogg") { return "OGG" }
+        if lower.contains("caf") { return "CAF" }
         let first = containerFormat.split(separator: ",").first.map(String.init)?.uppercased() ?? "MEDIA"
         return first.count <= 5 ? first : suggestedContainer.shortName
     }
@@ -168,6 +204,13 @@ public struct MediaFile: Identifiable, Hashable, Codable, Sendable {
             if lowerFormat.contains("aiff") || containerLongName.isEmpty {
                 return "AIFF (Audio Interchange)"
             }
+        case "opus" where lowerFormat.contains("opus") || lowerFormat.contains("ogg") || containerLongName.isEmpty:
+            return "Opus (Ogg Audio)"
+        case "ogg" where lowerFormat.contains("ogg") || containerLongName.isEmpty,
+             "oga" where lowerFormat.contains("ogg") || containerLongName.isEmpty:
+            return "OGG (Ogg Vorbis Audio)"
+        case "caf" where lowerFormat.contains("caf") || containerLongName.isEmpty:
+            return "CAF (Apple Core Audio)"
         default:
             break
         }
