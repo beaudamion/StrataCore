@@ -31,9 +31,10 @@ All processing runs 100% on-device with zero telemetry and no remote dependencie
 
 Strata handles the most popular media formats and pro codecs:
 
-- **Containers**: MP4, MKV, MOV, M4V, WebM (inspection also supports AVI, TS, M2TS, FLV, OGG)
-- **Video**: H.264, HEVC / H.265 (8/10-bit, 4:2:2, alpha), Apple ProRes (Proxy through 4444 XQ), AV1 (SVT-AV1), VP9, and Uncompressed 4:2:2 (`v210` / `2vuy`)
-- **Audio**: AAC, AC3, E-AC3 (Dolby Digital+), ALAC, FLAC, Opus, MP3, WAV, AIFF, TrueHD, and DTS
+- **Video Containers**: MP4, MKV, MOV, M4V, WebM (inspection also supports AVI, TS, M2TS, FLV)
+- **Audio Containers**: M4A, FLAC, WAV, AIFF, MP3, Opus, OGG (Vorbis), CAF, and multi-track MKV
+- **Video Codecs**: H.264, HEVC / H.265 (8/10-bit, 4:2:2, alpha), Apple ProRes (Proxy through 4444 XQ), AV1 (SVT-AV1), VP9, and Uncompressed 4:2:2 (`v210` / `2vuy`)
+- **Audio Codecs**: AAC, AC3, E-AC3 (Dolby Digital+), ALAC, FLAC, Opus, MP3, Vorbis, Uncompressed PCM (16/24/32-bit little & big-endian, 32-bit float), TrueHD, and DTS
 - **Subtitles**: SRT, ASS/SSA, WebVTT, `mov_text`, PGS, and VobSub
 
 ---
@@ -41,8 +42,10 @@ Strata handles the most popular media formats and pro codecs:
 ## Features
 
 ### Lossless Remuxing & Track Control
-- **Instant Stream Copy**: Change containers (e.g. MKV to MP4) in seconds without re-compressing video or losing visual quality.
-- **Track Management**: Drag and drop to reorder tracks, turn off unneeded streams, or add external video, audio, and subtitle files.
+- **Instant Stream Copy**: Change video and audio containers in seconds without re-compressing or losing fidelity.
+- **Track Management & Reordering**: Drag and drop to reorder tracks, turn off unneeded streams, or add external video, audio, and subtitle files.
+- **Context-Aware Drop Zones**: Drop media directly onto the session header to replace the loaded file, or drop into the track list to add external tracks as new streams.
+- **Direct Drag-Out Track Extraction**: Drag any track out of the track list straight onto the Desktop or Finder to extract it on demand, complete with live progress, speed metrics, and completion notification.
 - **Web & Apple Device Optimization**: Turn on Web FastStart for instant browser playback, strip unnecessary metadata, and format subtitles for Apple devices.
 
 ### Apple Silicon Hardware Encoding & Pro Video
@@ -52,7 +55,8 @@ Strata handles the most popular media formats and pro codecs:
 - **Automatic Defaults with Full Control**: All settings default to **Automatic** to preserve your original file untouched unless you choose to customize. When you want to make adjustments, you have full control over quality presets, frame rates, color spaces (Rec. 709, Rec. 2020, HDR10, HLG), resolution scaling, rotation, and deinterlacing.
 
 ### Audio Transcoding & Loudness Mastering
-- **Smart Audio Conversion**: Transcode audio tracks to AAC, AC3, Dolby Digital+, ALAC, FLAC, Opus, MP3, WAV, or AIFF. Bitrates, channels, and sample rates (up to 192 kHz) default to **Automatic** to mirror your original sound.
+- **First-Class Audio Containers**: Master audio directly into M4A, FLAC, WAV, AIFF, MP3, Opus, OGG, CAF, or MKV with smart container validation, multi-track safeguards, and bi-directional track synchronization.
+- **Smart Audio Conversion**: Transcode audio tracks to AAC, AC3, Dolby Digital+, ALAC, FLAC, Opus, Vorbis, MP3, WAV, or AIFF. Bitrates, channels, and sample rates (up to 192 kHz) default to **Automatic** to mirror your original sound.
 - **EBU R128 Loudness Normalization**: Level your audio with industry-standard targets for Streaming (`-14 LUFS`), Apple / Podcast (`-16 LUFS`), and Broadcast (`-23 LUFS`).
 - **Individual Track Extraction**: Quickly export isolated video, dialogue, music stems, or subtitle tracks directly to their own standalone files.
 
