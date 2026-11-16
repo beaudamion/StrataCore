@@ -31,8 +31,8 @@ All processing runs 100% on-device with zero telemetry and no remote dependencie
 
 Strata handles the most popular media formats and pro codecs:
 
-- **Video Containers**: MP4, MKV, MOV, M4V, WebM (inspection also supports AVI, TS, M2TS, FLV)
-- **Audio Containers**: M4A, FLAC, WAV, AIFF, MP3, Opus, OGG (Vorbis), CAF, and multi-track MKV
+- **Video Containers**: MP4, MKV, MOV, M4V, WebM (inspection also supports AVI, TS, M2TS, FLV, WMV)
+- **Audio Containers**: M4A, FLAC, WAV, AIFF, MP3, Opus, OGG, CAF, and multi-track MKV
 - **Video Codecs**: H.264, HEVC / H.265 (8/10-bit, 4:2:2, alpha), Apple ProRes (Proxy through 4444 XQ), AV1 (SVT-AV1), VP9, and Uncompressed 4:2:2 (`v210` / `2vuy`)
 - **Audio Codecs**: AAC, AC3, E-AC3 (Dolby Digital+), ALAC, FLAC, Opus, MP3, Vorbis, Uncompressed PCM (16/24/32-bit little & big-endian, 32-bit float), TrueHD, and DTS
 - **Subtitles**: SRT, ASS/SSA, WebVTT, `mov_text`, PGS, and VobSub
