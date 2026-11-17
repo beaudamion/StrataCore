@@ -218,7 +218,7 @@ public final class ProbePipeline {
         await DiagnosticSink.shared.emit(DiagnosticEvent(
             category: .probe,
             level: .info,
-            message: "Probing media file: \(fileURL.lastPathComponent)",
+            message: "Probing media file: '\(fileURL.lastPathComponent)'",
             metadata: ["path": fileURL.path]
         ))
         
@@ -343,7 +343,7 @@ public final class ProbePipeline {
             }
         }
         
-        let summary = "Probed \(fileURL.lastPathComponent): \(mediaFile.tracks.count) track(s) (\(mediaFile.summaryDescription)), \(mediaFile.formattedDuration), \(mediaFile.formattedSize)"
+        let summary = "Probed '\(fileURL.lastPathComponent)': \(mediaFile.tracks.count) track(s) (\(mediaFile.summaryDescription)), \(mediaFile.formattedDuration), \(mediaFile.formattedSize)"
         await DiagnosticSink.shared.emit(DiagnosticEvent(
             category: .probe,
             level: .info,
@@ -369,7 +369,7 @@ public final class ProbePipeline {
         DiagnosticSink.shared.emitDetached(DiagnosticEvent(
             category: .probe,
             level: .error,
-            message: "Probe failed for \(fileURL.lastPathComponent): \(trimmedErr.isEmpty ? "Unknown exit \(terminationStatus)" : String(trimmedErr.prefix(160)))",
+            message: "Probe failed for '\(fileURL.lastPathComponent)': \(trimmedErr.isEmpty ? "Unknown exit \(terminationStatus)" : String(trimmedErr.prefix(160)))",
             metadata: ["path": fileURL.path, "status": "\(terminationStatus)"]
         ))
         let isDynamicLinkerFailure = rawStderr.localizedCaseInsensitiveContains("dyld[")

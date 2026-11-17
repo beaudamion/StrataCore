@@ -1984,7 +1984,7 @@ public actor RemuxEngine {
                 await DiagnosticSink.shared.emit(DiagnosticEvent(
                     category: isPureRemux ? .remux : .transcode,
                     level: .info,
-                    message: "Starting \(plan.badgeTitle): '\(file.filename)' -> \(options.targetContainer.fileExtension.uppercased()) (\(options.outputURL.lastPathComponent))",
+                    message: "Starting \(plan.badgeTitle): '\(file.filename)' -> \(options.targetContainer.fileExtension.uppercased()) ('\(options.outputURL.lastPathComponent)')",
                     metadata: [
                         "plan": plan.badgeTitle,
                         "input": file.url.path,
