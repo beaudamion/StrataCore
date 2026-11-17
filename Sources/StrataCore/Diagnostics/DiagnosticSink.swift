@@ -21,6 +21,13 @@ public actor DiagnosticSink {
         }
     }
     
+    /// Nonisolated convenience helper to emit a diagnostic event from synchronous or detached contexts.
+    public nonisolated func emitDetached(_ event: DiagnosticEvent) {
+        Task {
+            await self.emit(event)
+        }
+    }
+    
     /// Record a failed job snapshot and broadcast it to active observers.
     public func recordFailedJob(_ snapshot: FailedJobSnapshot) {
         recentFailedJobs.append(snapshot)

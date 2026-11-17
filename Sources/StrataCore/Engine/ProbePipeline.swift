@@ -215,6 +215,13 @@ public final class ProbePipeline {
             fileURL.path
         ]
         
+        await DiagnosticSink.shared.emit(DiagnosticEvent(
+            category: .probe,
+            level: .info,
+            message: "Probing media file: \(fileURL.lastPathComponent)",
+            metadata: ["path": fileURL.path]
+        ))
+        
         let process = Process()
         process.executableURL = URL(fileURLWithPath: ffprobePath)
         process.arguments = arguments
@@ -336,6 +343,19 @@ public final class ProbePipeline {
             }
         }
         
+        let summary = "Probed \(fileURL.lastPathComponent): \(mediaFile.tracks.count) track(s) (\(mediaFile.summaryDescription)), \(mediaFile.formattedDuration), \(mediaFile.formattedSize)"
+        await DiagnosticSink.shared.emit(DiagnosticEvent(
+            category: .probe,
+            level: .info,
+            message: summary,
+            metadata: [
+                "path": fileURL.path,
+                "tracks": "\(mediaFile.tracks.count)",
+                "duration": mediaFile.formattedDuration,
+                "size": mediaFile.formattedSize
+            ]
+        ))
+        
         return mediaFile
     }
     
@@ -345,6 +365,13 @@ public final class ProbePipeline {
         terminationReason: Process.TerminationReason,
         fileURL: URL
     ) -> ProbeError {
+        let trimmedErr = rawStderr.trimmingCharacters(in: .whitespacesAndNewlines)
+        DiagnosticSink.shared.emitDetached(DiagnosticEvent(
+            category: .probe,
+            level: .error,
+            message: "Probe failed for \(fileURL.lastPathComponent): \(trimmedErr.isEmpty ? "Unknown exit \(terminationStatus)" : String(trimmedErr.prefix(160)))",
+            metadata: ["path": fileURL.path, "status": "\(terminationStatus)"]
+        ))
         let isDynamicLinkerFailure = rawStderr.localizedCaseInsensitiveContains("dyld[")
             || rawStderr.localizedCaseInsensitiveContains("dyld:")
             || rawStderr.localizedCaseInsensitiveContains("Library not loaded")

@@ -1591,6 +1591,14 @@ public actor RemuxEngine {
         
         registerProcess(process, id: processID)
         
+        let summaryArgs = arguments.prefix(12).joined(separator: " ")
+        await DiagnosticSink.shared.emit(DiagnosticEvent(
+            category: .remux,
+            level: .info,
+            message: "Executing FFmpeg [\(phaseLabel ?? "Export")]: \(summaryArgs)...",
+            metadata: ["phase": phaseLabel ?? "Export"]
+        ))
+        
         do {
             try process.run()
         } catch {
@@ -1691,7 +1699,14 @@ public actor RemuxEngine {
         let finalStatus = exitStatus ?? (process.isRunning ? -1 : process.terminationStatus)
         unregisterProcess(id: processID)
         
-        if finalStatus != 0 && !self.isCancelled {
+        if finalStatus == 0 {
+            await DiagnosticSink.shared.emit(DiagnosticEvent(
+                category: .remux,
+                level: .info,
+                message: "FFmpeg [\(phaseLabel ?? "Export")] completed successfully (exit code 0)",
+                metadata: ["phase": phaseLabel ?? "Export"]
+            ))
+        } else if finalStatus != 0 && !self.isCancelled {
             let snapshot = FailedJobSnapshot(
                 operation: phaseLabel ?? "FFmpeg Process",
                 executableName: "ffmpeg",
@@ -1732,6 +1747,13 @@ public actor RemuxEngine {
             terminationContinuation.finish()
         }
         registerProcess(process, id: processID)
+        
+        await DiagnosticSink.shared.emit(DiagnosticEvent(
+            category: .remux,
+            level: .info,
+            message: "Measuring EBU R128 loudness for track #\(track.streamIndex)...",
+            metadata: ["track": "\(track.streamIndex)"]
+        ))
         
         do {
             try process.run()
@@ -1842,6 +1864,14 @@ public actor RemuxEngine {
         
         registerProcess(process, id: processID)
         
+        let summaryArgs = arguments.prefix(12).joined(separator: " ")
+        await DiagnosticSink.shared.emit(DiagnosticEvent(
+            category: .transcode,
+            level: .info,
+            message: "Segment worker FFmpeg launched: \(summaryArgs)...",
+            metadata: ["duration": "\(chunkDuration)"]
+        ))
+        
         do {
             try process.run()
         } catch {
@@ -1949,6 +1979,20 @@ public actor RemuxEngine {
                 
                 let binCaps = await BinaryCapabilityProbe.shared.capabilities(for: ffmpegPath)
                 let plan = ExecutionPlanner.plan(for: file, options: options, binaryCapabilities: binCaps)
+                
+                let isPureRemux = (plan.tier == .losslessRemuxOrSmartCut)
+                await DiagnosticSink.shared.emit(DiagnosticEvent(
+                    category: isPureRemux ? .remux : .transcode,
+                    level: .info,
+                    message: "Starting \(plan.badgeTitle): '\(file.filename)' -> \(options.targetContainer.fileExtension.uppercased()) (\(options.outputURL.lastPathComponent))",
+                    metadata: [
+                        "plan": plan.badgeTitle,
+                        "input": file.url.path,
+                        "output": options.outputURL.path,
+                        "fastStart": "\(options.fastStart)",
+                        "stripMetadata": "\(options.stripAllMetadata)"
+                    ]
+                ))
                 
                 if plan.requiresDolbyVisionGuard {
                     continuation.yield(RemuxProgress(
@@ -2268,6 +2312,12 @@ public actor RemuxEngine {
         }
         
         if encodeSucceeded {
+            await DiagnosticSink.shared.emit(DiagnosticEvent(
+                category: .remux,
+                level: .info,
+                message: "Export completed successfully: '\(options.outputURL.lastPathComponent)'",
+                metadata: ["output": options.outputURL.path]
+            ))
             let qcResult = await self.evaluatePerceptualQCIfNeeded(
                 file: file,
                 options: options,
@@ -2472,6 +2522,12 @@ public actor RemuxEngine {
         )
         
         if !self.isCancelled && stitchStatus == 0 {
+            await DiagnosticSink.shared.emit(DiagnosticEvent(
+                category: .transcode,
+                level: .info,
+                message: "Segmented transcode and stitch completed successfully: '\(options.outputURL.lastPathComponent)'",
+                metadata: ["output": options.outputURL.path]
+            ))
             let qcResult = await self.evaluatePerceptualQCIfNeeded(
                 file: file,
                 options: options,
@@ -2520,6 +2576,13 @@ public actor RemuxEngine {
                 
                 // Ensure parent directory exists
                 try? FileManager.default.createDirectory(at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                
+                await DiagnosticSink.shared.emit(DiagnosticEvent(
+                    category: .remux,
+                    level: .info,
+                    message: "Extracting track #\(track.streamIndex) (\(track.codecName)) from '\(file.filename)' -> '\(outputURL.lastPathComponent)'",
+                    metadata: ["track": "\(track.streamIndex)", "codec": track.codecName]
+                ))
                 
                 let duration = file.duration
                 var loudnessMeasurement: LoudnormMeasurement? = nil
@@ -2585,6 +2648,12 @@ public actor RemuxEngine {
                     )
                     
                     if !self.isCancelled && status2 == 0 {
+                        await DiagnosticSink.shared.emit(DiagnosticEvent(
+                            category: .remux,
+                            level: .info,
+                            message: "Extracted track #\(track.streamIndex) successfully to '\(outputURL.lastPathComponent)'",
+                            metadata: ["output": outputURL.path]
+                        ))
                         continuation.yield(RemuxProgress(progress: 1.0, currentTime: duration, totalTime: duration, speed: "Done"))
                     }
                 } else {
@@ -2607,6 +2676,12 @@ public actor RemuxEngine {
                     )
                     
                     if !self.isCancelled && status == 0 {
+                        await DiagnosticSink.shared.emit(DiagnosticEvent(
+                            category: .remux,
+                            level: .info,
+                            message: "Extracted track #\(track.streamIndex) successfully to '\(outputURL.lastPathComponent)'",
+                            metadata: ["output": outputURL.path]
+                        ))
                         continuation.yield(RemuxProgress(progress: 1.0, currentTime: duration, totalTime: duration, speed: "Done"))
                     }
                 }
@@ -2618,6 +2693,11 @@ public actor RemuxEngine {
     
     public func cancel() {
         self.isCancelled = true
+        DiagnosticSink.shared.emitDetached(DiagnosticEvent(
+            category: .remux,
+            level: .warning,
+            message: "Remux engine operation cancelled"
+        ))
         if let nativeEngine = activeNativeEngine {
             activeNativeEngine = nil
             Task { await nativeEngine.cancel() }

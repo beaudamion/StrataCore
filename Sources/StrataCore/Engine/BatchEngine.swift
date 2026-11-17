@@ -73,6 +73,14 @@ public final class BatchEngine: ObservableObject {
             }
         }
         
+        if !validURLs.isEmpty {
+            DiagnosticSink.shared.emitDetached(DiagnosticEvent(
+                category: .batch,
+                level: .info,
+                message: "Added \(validURLs.count) file(s) to Batch Queue"
+            ))
+        }
+        
         for url in validURLs {
             // Avoid duplicate source URL in queue if already pending
             if items.contains(where: { $0.sourceURL == url && $0.status == .pending }) {
@@ -216,6 +224,12 @@ public final class BatchEngine: ObservableObject {
         guard !isRunning else { return }
         isRunning = true
         
+        DiagnosticSink.shared.emitDetached(DiagnosticEvent(
+            category: .batch,
+            level: .info,
+            message: "Started batch queue execution (\(self.items.count) item(s))"
+        ))
+        
         engineTask = Task {
             for index in 0..<self.items.count {
                 if Task.isCancelled { break }
@@ -247,6 +261,12 @@ public final class BatchEngine: ObservableObject {
                 }
                 
                 guard let validMedia = self.items[index].mediaFile else { continue }
+                
+                DiagnosticSink.shared.emitDetached(DiagnosticEvent(
+                    category: .batch,
+                    level: .info,
+                    message: "Processing batch item [\(index + 1)/\(self.items.count)]: '\(validMedia.filename)' -> \(item.targetContainer.rawValue.uppercased())"
+                ))
                 
                 // Determine output destination
                 let outURL: URL
@@ -301,6 +321,11 @@ public final class BatchEngine: ObservableObject {
                 self.currentItemIndex = nil
                 self.currentRemuxEngine = nil
                 let done = self.completedCount
+                DiagnosticSink.shared.emitDetached(DiagnosticEvent(
+                    category: .batch,
+                    level: .info,
+                    message: "Batch queue finished. Processed \(done) item(s)."
+                ))
                 if done > 0 {
                     self.successMessage = "Batch Export Complete: \(done) item\(done == 1 ? "" : "s") processed"
                     self.showSuccessToast = true
@@ -312,6 +337,11 @@ public final class BatchEngine: ObservableObject {
     public func cancel() {
         engineTask?.cancel()
         engineTask = nil
+        DiagnosticSink.shared.emitDetached(DiagnosticEvent(
+            category: .batch,
+            level: .warning,
+            message: "Batch queue execution cancelled by user"
+        ))
         Task {
             await currentRemuxEngine?.cancel()
             await MainActor.run {

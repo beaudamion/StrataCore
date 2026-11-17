@@ -142,4 +142,21 @@ struct DiagnosticsTests {
         #expect(decodedSnapshot.arguments.count == 5)
         #expect(decodedSnapshot.stderrTail.first?.contains("-12915") == true)
     }
+    
+    @Test("DiagnosticSink EmitDetached Nonisolated Convenience")
+    func testDiagnosticSinkEmitDetached() async {
+        let sink = DiagnosticSink()
+        let stream = await sink.subscribeEvents()
+        var iterator = stream.makeAsyncIterator()
+        
+        sink.emitDetached(DiagnosticEvent(
+            category: .probe,
+            level: .info,
+            message: "Detached probe event"
+        ))
+        
+        let received = await iterator.next()
+        #expect(received?.message == "Detached probe event")
+        #expect(received?.category == .probe)
+    }
 }
